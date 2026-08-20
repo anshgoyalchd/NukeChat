@@ -1,0 +1,36 @@
+{
+  "name": "nuke-chat-backend",
+  "main": "src/index.ts",
+  "compatibility_date": "2024-04-01",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "ROOM_DO",
+        "class_name": "RoomDO"
+      },
+      {
+        "name": "MATCHMAKING_DO",
+        "class_name": "MatchmakingDO"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "RoomDO",
+        "MatchmakingDO"
+      ]
+    }
+  ],
+  "vars": {
+    "MAX_ROOM_CAPACITY_TIMED": "50",
+    "MAX_ROOM_CAPACITY_P2P": "12",
+    "NUM_MATCHMAKING_SHARDS": "3",
+    "METERED_API_KEY": "dmh50IXuK-0n5-P_X6qHnfpghxMfSEdeCAQj3LZQtEP9AFpJ",
+    "METERED_APP_NAME": "nuke-chat"
+  }
+}

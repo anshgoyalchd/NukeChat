@@ -1,0 +1,24 @@
+# Nuke Chat
+
+> Talk. Share. Nuke It.
+
+Nuke Chat is a secure, anonymous, and temporary instant messaging web application that requires zero accounts, zero databases, and zero message retention. It operates 100% within free-tier serverless cloud infrastructure.
+
+## Key Features
+
+- **Accountless & Anonymous**: No sign-ups, email addresses, or tracking. Users are assigned random adjective-animal names (e.g., "Sleepy Panda 482").
+- **End-to-End Encrypted Timed Chats**: Chat rooms that expire in 15m, 30m, 1h, or 2h. Messages are encrypted client-side using `AES-256-GCM` and are destroyed permanently when the timer runs out or the last user leaves.
+- **Direct P2P Mesh Chat**: Direct browser-to-browser WebRTC DataChannels for sharing files, images, videos, and text. Payloads bypass servers entirely.
+- **Nuke Vote**: Any participant can trigger a vote to instantly wipe the chat, sever all connections, and erase local client caches.
+
+## Technical Stack
+
+- **Frontend**: React (TypeScript), Vite, Tailwind CSS, IndexedDB.
+- **Backend**: Cloudflare Workers, Hono, Durable Objects (SQLite-backed storage).
+- **Realtime Protocols**: WebSockets, WebRTC.
+- **Security Primitives**: Web Crypto API (AES-256-GCM, SHA-256).
+
+## Project Links
+- **Homepage & Web App**: https://nuke-chat.pages.dev/
+- **Privacy Policy**: https://nuke-chat.pages.dev/#/privacy
+- **Terms of Service**: https://nuke-chat.pages.dev/#/terms
