@@ -290,5 +290,97 @@ async function encryptMessage(text, keyMaterial, salt) {
         text: 'Sharing files shouldn\'t mean giving up ownership. By switching to browser-native P2P file sharing, you take control of your data, bypass cloud storage limitations, and keep your files completely private.'
       }
     ]
+  },
+  {
+    slug: 'discord-slack-alternatives-no-account',
+    title: 'Best Discord & Slack Alternatives That Don\'t Require an Account',
+    date: 'August 21, 2026',
+    readTime: '4 min read',
+    category: 'Productivity',
+    description: 'Looking for a quick, accountless chat room? Compare the best free, disposable, and private alternatives to Slack and Discord that require zero sign-ups.',
+    sections: [
+      {
+        type: 'heading',
+        text: 'Why Avoid Sign-ups?'
+      },
+      {
+        type: 'paragraph',
+        text: 'Most modern communication tools (like Slack, Discord, and Telegram) require a phone number, email address, or third-party OAuth login to get started. If you just need to coordinate a quick meeting, share a file, or have a confidential discussion, creating an account is a hassle. It also links your real-world identity to your chat histories.'
+      },
+      {
+        type: 'heading',
+        text: 'Top 3 Accountless Chat Tools'
+      },
+      {
+        type: 'paragraph',
+        text: 'Here are the best free, zero-signup web chat rooms available online today:'
+      },
+      {
+        type: 'list',
+        items: [
+          'Nuke Chat: Offers both Timed E2EE rooms and direct P2P mesh file sharing, complete with a majority-voted "Nuke" command that instantly wipes all database records and client cache.',
+          'Hack.chat: An ultra-minimalist, developer-centric chat room. You choose a room name in the URL (e.g. hack.chat/?room), which acts as the channel. Extremely fast but lacks encryption by default.',
+          'Tlk.io: A simple, embeddable web chat room. Great for quick public group conversations, but does not provide end-to-end encryption or self-destructing file transfers.'
+        ]
+      },
+      {
+        type: 'heading',
+        text: 'Why Nuke Chat Stands Out'
+      },
+      {
+        type: 'paragraph',
+        text: 'Unlike public chat rooms that store logs on their servers, Nuke Chat combines accountless identity with client-side encryption. Your messages are encrypted using browser-native AES-GCM, meaning not even our servers can read your logs.'
+      },
+      {
+        type: 'heading',
+        text: 'Conclusion'
+      },
+      {
+        type: 'paragraph',
+        text: 'If you want to spin up a quick, secure group discussion without the friction of inputting your email address, Nuke Chat is the ideal choice for quick, secure, and disposable collaboration.'
+      }
+    ]
+  },
+  {
+    slug: 'why-zero-logs-database-retention',
+    title: 'Why We Built a Chat App with Zero Server Logs or Database Retention',
+    date: 'August 21, 2026',
+    readTime: '3 min read',
+    category: 'Philosophy',
+    description: 'Explore why data retention is a security liability and how Nuke Chat is architected to operate with zero logs, zero user retention, and complete anonymity.',
+    sections: [
+      {
+        type: 'heading',
+        text: 'The Risk of Permanent Logs'
+      },
+      {
+        type: 'paragraph',
+        text: 'In the digital age, "delete" doesn\'t always mean delete. When you click delete on a standard chat app, the database marks the row as "inactive" or archives it in backups. For users who value their privacy, this permanent data trail is a security liability. If a server is compromised or requested by third parties, your past chat logs are exposed.'
+      },
+      {
+        type: 'heading',
+        text: 'Zero Logs by Design'
+      },
+      {
+        type: 'paragraph',
+        text: 'Nuke Chat was engineered from day one to store absolutely nothing. We do not use persistent databases. Instead, chat rooms run entirely in serverless in-memory SQLite databases embedded in Cloudflare Durable Objects. The moment the room timer hits zero or the last user leaves, the database instance is physically deleted from the edge node memory.'
+      },
+      {
+        type: 'heading',
+        text: 'Nuking the History'
+      },
+      {
+        type: 'paragraph',
+        text: 'If you need to leave instantly, any participant can trigger a Nuke Vote. When the vote passes, a script wipes the active room\'s memory, clears your browser cache, severs WebSocket connections, and renders a nuclear blast animation across all screens. Your data is permanently gone, with zero possibility of recovery.'
+      },
+      {
+        type: 'heading',
+        text: 'Conclusion'
+      },
+      {
+        type: 'paragraph',
+        text: 'Privacy-first tools require privacy-first architecture. By combining client-side cryptography with serverless edge databases, Nuke Chat proves that robust privacy can be built without heavy, expensive, or permanent server infrastructure.'
+      }
+    ]
   }
 ];

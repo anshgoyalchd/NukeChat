@@ -12,7 +12,9 @@ const data = JSON.stringify({
     'https://nuke-chat.pages.dev/#/blog/p2p-webrtc-file-sharing',
     'https://nuke-chat.pages.dev/#/blog/client-side-aes-gcm-encryption',
     'https://nuke-chat.pages.dev/#/blog/serverless-privacy-ephemeral-apps',
-    'https://nuke-chat.pages.dev/#/blog/share-large-files-privately-no-cloud'
+    'https://nuke-chat.pages.dev/#/blog/share-large-files-privately-no-cloud',
+    'https://nuke-chat.pages.dev/#/blog/discord-slack-alternatives-no-account',
+    'https://nuke-chat.pages.dev/#/blog/why-zero-logs-database-retention'
   ]
 });
 
