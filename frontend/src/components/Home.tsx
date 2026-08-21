@@ -238,6 +238,8 @@ export const Home: React.FC<HomeProps> = ({
 
       {/* Legal Footer */}
       <footer className="mt-8 text-[10px] text-secondaryText/60 flex items-center justify-center gap-3">
+        <a href="#/blog" className="hover:text-primaryText underline transition-colors">Blog</a>
+        <span className="w-1 h-1 rounded-full bg-secondaryText/45" />
         <a href="#/privacy" className="hover:text-primaryText underline transition-colors">Privacy Policy</a>
         <span className="w-1 h-1 rounded-full bg-secondaryText/45" />
         <a href="#/terms" className="hover:text-primaryText underline transition-colors">Terms of Service</a>

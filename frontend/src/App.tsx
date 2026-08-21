@@ -7,6 +7,8 @@ import { IdentitySetup } from "./components/IdentitySetup";
 import { ActiveRoom } from "./components/ActiveRoom";
 import { NukeAnimation } from "./components/NukeAnimation";
 import { LegalPage } from "./components/LegalPage";
+import { BlogPage } from "./components/BlogPage";
+import { BLOG_POSTS } from "./blog/posts";
 import { Shuffle, Loader2 } from "lucide-react";
 import { RoomType, RoomVisibility } from "../../shared/types";
 import { wipeDatabase } from "./utils/db";
@@ -79,6 +81,16 @@ export default function App() {
     } else if (currentHash === "#/terms") {
       title = "Terms of Service | Nuke Chat";
       description = "Read Nuke Chat's terms of service. Ephemeral, self-destructing rooms with client-side encryption and zero database retention.";
+    } else if (currentHash === "#/blog") {
+      title = "Blog & Resources | Nuke Chat";
+      description = "Nuke Chat Technical Blog. Privacy guidelines, developer walkthroughs, and in-depth articles on P2P cryptography and serverless technology.";
+    } else if (currentHash.startsWith("#/blog/")) {
+      const postSlug = currentHash.replace("#/blog/", "");
+      const post = BLOG_POSTS.find((p) => p.slug === postSlug);
+      if (post) {
+        title = `${post.title} | Nuke Chat Blog`;
+        description = post.description;
+      }
     } else {
       switch (screen) {
         case "CREATE":
@@ -301,6 +313,15 @@ export default function App() {
         <main className="flex-grow flex flex-col">
           <LegalPage
             type={currentHash === "#/privacy" ? "privacy" : "terms"}
+            onBack={() => {
+              window.location.hash = "";
+            }}
+          />
+        </main>
+      ) : currentHash.startsWith("#/blog") ? (
+        <main className="flex-grow flex flex-col">
+          <BlogPage
+            currentHash={currentHash}
             onBack={() => {
               window.location.hash = "";
             }}
