@@ -17,6 +17,16 @@ Nuke Chat is a production-quality, anonymous, temporary communication web applic
 
 ---
 
+## 📖 Technical Blog & Resources
+
+Explore detailed technical explainers about the Nuke Chat architecture, encryption, and peer-to-peer designs:
+
+* **[How P2P WebRTC Mesh Networks Enable Serverless Secure File Sharing](https://nuke-chat.pages.dev/#/blog/p2p-webrtc-file-sharing)**: Deep dive into how browser-native WebRTC DataChannels transfer files directly between peers without intermediate cloud storage.
+* **[How Client-Side AES-256-GCM Encryption Works in the Browser](https://nuke-chat.pages.dev/#/blog/client-side-aes-gcm-encryption)**: Learn how browser-native Web Crypto APIs PBKDF2 key derivation and AES-GCM are implemented client-side.
+* **[Why Serverless Architecture is the Future of Privacy-First Ephemeral Apps](https://nuke-chat.pages.dev/#/blog/serverless-privacy-ephemeral-apps)**: Read about why running temporary chat databases in-memory via Cloudflare Durable Objects matches the requirements of disposable messaging.
+
+---
+
 ## 🛠️ Technology Stack
 
 * **Frontend**: React (TypeScript), Vite, Tailwind CSS, Framer Motion, IndexedDB
