@@ -27,6 +27,10 @@ Explore detailed technical explainers about the Nuke Chat architecture, encrypti
 * **[How to Share Large Files Privately Without Uploading to Cloud Servers](https://nuke-chat.pages.dev/#/blog/share-large-files-privately-no-cloud)**: Learn how browser-to-browser P2P file sharing allows you to transfer sensitive documents, photos, and videos without size limits or third-party cloud uploads.
 * **[Best Discord & Slack Alternatives That Don't Require an Account](https://nuke-chat.pages.dev/#/blog/discord-slack-alternatives-no-account)**: Compare the best free, disposable, and private alternatives to Slack and Discord that require zero sign-ups.
 * **[Why We Built a Chat App with Zero Server Logs or Database Retention](https://nuke-chat.pages.dev/#/blog/why-zero-logs-database-retention)**: Read about why running temporary chat databases in-memory via Cloudflare Durable Objects matches the requirements of disposable messaging.
+* **[How to Send Encrypted Messages in the Browser](https://nuke-chat.pages.dev/#/blog/how-to-send-encrypted-messages-browser)**: A complete, step-by-step guide on how to secure your online chat sessions using browser-native end-to-end encryption without downloading any apps.
+* **[How Does WebRTC Peer-to-Peer File Sharing Work?](https://nuke-chat.pages.dev/#/blog/how-does-webrtc-p2p-file-sharing-work)**: Learn the mechanics of WebRTC technology and how peer-to-peer channels enable direct, serverless browser connections to transfer files safely.
+* **[The Developer's Guide to WebRTC DataChannels: Direct P2P File Sharing](https://nuke-chat.pages.dev/#/blog/developers-guide-webrtc-datachannels-p2p)**: A technical deep-dive for developers on configuring RTCDataChannel, handling ICE candidates, and streaming binary chunks natively in JavaScript.
+* **[How Client-Side AES-256-GCM Encryption Keeps Your Chats Private](https://nuke-chat.pages.dev/#/blog/how-client-side-aes-gcm-keeps-chats-private)**: An in-depth explanation of symmetric key encryption, Galois/Counter Mode, and why client-side crypto ensures total privacy for your text chats.
 
 ---
 

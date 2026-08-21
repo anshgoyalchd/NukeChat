@@ -382,5 +382,186 @@ async function encryptMessage(text, keyMaterial, salt) {
         text: 'Privacy-first tools require privacy-first architecture. By combining client-side cryptography with serverless edge databases, Nuke Chat proves that robust privacy can be built without heavy, expensive, or permanent server infrastructure.'
       }
     ]
+  },
+  {
+    slug: 'how-to-send-encrypted-messages-browser',
+    title: 'How to Send Encrypted Messages in the Browser',
+    date: 'August 21, 2026',
+    readTime: '3 min read',
+    category: 'Security',
+    description: 'A complete, step-by-step guide on how to secure your online chat sessions using browser-native end-to-end encryption without downloading any apps.',
+    sections: [
+      {
+        type: 'heading',
+        text: 'The Need for Encryption in Daily Chat'
+      },
+      {
+        type: 'paragraph',
+        text: 'Every day, millions of private messages are intercepted, leaked, or scanned by ISPs and tech companies. Standard chat messages travel across the internet in plaintext or are encrypted only in transit, meaning the server owner holds the keys. To ensure true privacy, you must use end-to-end encryption (E2EE), where keys never leave your device.'
+      },
+      {
+        type: 'heading',
+        text: 'How Browser-Based Encryption Works'
+      },
+      {
+        type: 'paragraph',
+        text: 'Modern web browsers have built-in cryptographic engines called the Web Crypto API. This allows web applications to encrypt data directly inside the browser using secure algorithms like AES-256-GCM before sending anything over the network.'
+      },
+      {
+        type: 'heading',
+        text: 'Step-by-Step: Sending Encrypted Messages on Nuke Chat'
+      },
+      {
+        type: 'list',
+        items: [
+          'Open Nuke Chat and click "Create Room".',
+          'Choose the "Timed Chat" room type. This enables server-authoritative encrypted text chat.',
+          'Share the generated room code with your recipient. The room code forms part of the secret key derivation.',
+          'Type and send your messages. Your browser automatically encrypts them before they are sent over WebSockets.'
+        ]
+      },
+      {
+        type: 'heading',
+        text: 'Conclusion'
+      },
+      {
+        type: 'paragraph',
+        text: 'By using standard browser features, Nuke Chat allows you to exchange encrypted messages instantly with no setup, accounts, or configurations required.'
+      }
+    ]
+  },
+  {
+    slug: 'how-does-webrtc-p2p-file-sharing-work',
+    title: 'How Does WebRTC Peer-to-Peer File Sharing Work?',
+    date: 'August 21, 2026',
+    readTime: '3 min read',
+    category: 'Technology',
+    description: 'Learn the mechanics of WebRTC technology and how peer-to-peer channels enable direct, serverless browser connections to transfer files safely.',
+    sections: [
+      {
+        type: 'heading',
+        text: 'Understanding Peer-to-Peer (P2P)'
+      },
+      {
+        type: 'paragraph',
+        text: 'In traditional file sharing, your file goes from your browser to a server, and then from that server to your friend. In Peer-to-Peer sharing, your file is broken down into small packets and sent directly from your browser to your friend\'s browser. The server is completely cut out of the loop.'
+      },
+      {
+        type: 'heading',
+        text: 'The Role of WebRTC'
+      },
+      {
+        type: 'paragraph',
+        text: 'WebRTC (Web Real-Time Communication) is an open-source standard supported by Google, Apple, and Mozilla that enables real-time peer-to-peer connections inside the browser. It handles network configuration, signaling, and data channels automatically.'
+      },
+      {
+        type: 'heading',
+        text: 'The Three Steps of a WebRTC Connection'
+      },
+      {
+        type: 'list',
+        items: [
+          'Signaling: The two browsers exchange connection information (IP addresses and ports) using a temporary signaling server.',
+          'NAT Traversal: ICE candidates determine the best path to route packets through local routers and firewalls.',
+          'Data Exchange: Once connected, the browsers exchange files directly using secure WebRTC DataChannels.'
+        ]
+      },
+      {
+        type: 'heading',
+        text: 'Conclusion'
+      },
+      {
+        type: 'paragraph',
+        text: 'WebRTC has revolutionized browser-native communication, making direct file transfers accessible to everyone without third-party servers.'
+      }
+    ]
+  },
+  {
+    slug: 'developers-guide-webrtc-datachannels-p2p',
+    title: 'The Developer\'s Guide to WebRTC DataChannels: Direct P2P File Sharing',
+    date: 'August 21, 2026',
+    readTime: '4 min read',
+    category: 'Development',
+    description: 'A technical deep-dive for developers on configuring RTCDataChannel, handling ICE candidates, and streaming binary chunks natively in JavaScript.',
+    sections: [
+      {
+        type: 'heading',
+        text: 'Introduction to RTCDataChannel'
+      },
+      {
+        type: 'paragraph',
+        text: 'While WebRTC is widely known for audio and video streaming, its RTCDataChannel API is one of the most powerful tools for developers, allowing low-latency transfer of arbitrary binary data between peers.'
+      },
+      {
+        type: 'heading',
+        text: 'Configuring the Connection'
+      },
+      {
+        type: 'paragraph',
+        text: 'To set up a P2P data channel, we instantiate RTCPeerConnection and call createDataChannel on the sender side:'
+      },
+      {
+        type: 'code',
+        code: '// Initialize connection & data channel\nconst peerConnection = new RTCPeerConnection(config);\nconst dataChannel = peerConnection.createDataChannel("file-transfer", {\n  ordered: true\n});'
+      },
+      {
+        type: 'heading',
+        text: 'Handling Large Binary Transfers'
+      },
+      {
+        type: 'paragraph',
+        text: 'Since browsers impose buffer limits on RTCDataChannel (typically 16MB), developers must chunk large files into smaller Uint8Arrays (e.g. 16KB or 64KB) and track the bufferedAmount property to avoid network congestion.'
+      },
+      {
+        type: 'heading',
+        text: 'Conclusion'
+      },
+      {
+        type: 'paragraph',
+        text: 'Using RTCDataChannels effectively requires understanding browser limits, chunking buffers, and implementing flow control, enabling fast and serverless file sharing.'
+      }
+    ]
+  },
+  {
+    slug: 'how-client-side-aes-gcm-keeps-chats-private',
+    title: 'How Client-Side AES-256-GCM Encryption Keeps Your Chats Private',
+    date: 'August 21, 2026',
+    readTime: '3 min read',
+    category: 'Security',
+    description: 'An in-depth explanation of symmetric key encryption, Galois/Counter Mode, and why client-side crypto ensures total privacy for your text chats.',
+    sections: [
+      {
+        type: 'heading',
+        text: 'Symmetric Encryption vs Asymmetric Encryption'
+      },
+      {
+        type: 'paragraph',
+        text: 'Symmetric encryption uses a single shared secret key to both encrypt and decrypt messages. In Nuke Chat, this key is derived from the unique room code and a salt value, ensuring that only users who have the room code can decrypt the messages.'
+      },
+      {
+        type: 'heading',
+        text: 'Why Galois/Counter Mode (GCM)?'
+      },
+      {
+        type: 'paragraph',
+        text: 'AES-256-GCM is an Authenticated Encryption with Associated Data (AEAD) algorithm. Unlike older modes like CBC, GCM not only encrypts the message payload but also generates an authentication tag. This tag ensures that the message cannot be modified or tampered with in transit.'
+      },
+      {
+        type: 'heading',
+        text: 'The Server is Blind'
+      },
+      {
+        type: 'paragraph',
+        text: 'Because the encryption and decryption processes occur entirely within the clients\' JavaScript runtimes, the Cloudflare Worker server only receives and relays base64-encoded encrypted payloads. Even if our database or server is compromised, the attacker only sees scrambled text without the keys to decrypt it.'
+      },
+      {
+        type: 'heading',
+        text: 'Conclusion'
+      },
+      {
+        type: 'paragraph',
+        text: 'By executing cryptographic operations on the client-side, AES-GCM guarantees absolute mathematical privacy for your conversations.'
+      }
+    ]
   }
 ];
