@@ -24,6 +24,7 @@ Explore detailed technical explainers about the Nuke Chat architecture, encrypti
 * **[How P2P WebRTC Mesh Networks Enable Serverless Secure File Sharing](https://nuke-chat.pages.dev/#/blog/p2p-webrtc-file-sharing)**: Deep dive into how browser-native WebRTC DataChannels transfer files directly between peers without intermediate cloud storage.
 * **[How Client-Side AES-256-GCM Encryption Works in the Browser](https://nuke-chat.pages.dev/#/blog/client-side-aes-gcm-encryption)**: Learn how browser-native Web Crypto APIs PBKDF2 key derivation and AES-GCM are implemented client-side.
 * **[Why Serverless Architecture is the Future of Privacy-First Ephemeral Apps](https://nuke-chat.pages.dev/#/blog/serverless-privacy-ephemeral-apps)**: Read about why running temporary chat databases in-memory via Cloudflare Durable Objects matches the requirements of disposable messaging.
+* **[How to Share Large Files Privately Without Uploading to Cloud Servers](https://nuke-chat.pages.dev/#/blog/share-large-files-privately-no-cloud)**: Learn how browser-to-browser P2P file sharing allows you to transfer sensitive documents, photos, and videos without size limits or third-party cloud uploads.
 
 ---
 

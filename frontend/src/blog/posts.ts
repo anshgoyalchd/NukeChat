@@ -236,5 +236,59 @@ async function encryptMessage(text, keyMaterial, salt) {
         text: 'Privacy-first tools require privacy-first architecture. By combining client-side cryptography with serverless edge databases, Nuke Chat proves that robust privacy can be built without heavy, expensive, or permanent server infrastructure.'
       }
     ]
+  },
+  {
+    slug: 'share-large-files-privately-no-cloud',
+    title: 'How to Share Large Files Privately Without Uploading to Cloud Servers',
+    date: 'August 21, 2026',
+    readTime: '3 min read',
+    category: 'Privacy',
+    description: 'Learn how browser-to-browser P2P file sharing allows you to transfer sensitive documents, photos, and videos without size limits or third-party cloud uploads.',
+    sections: [
+      {
+        type: 'heading',
+        text: 'The Hidden Risks of Cloud File Hosting'
+      },
+      {
+        type: 'paragraph',
+        text: 'When you share a file via Dropbox, WeTransfer, Google Drive, or standard chat applications, the file is uploaded to their central cloud servers. Even if you delete the link later, the raw file data often persists in backups or server hard drives for months. For sensitive documents, tax returns, or private photos, this leaves a permanent digital footprint that is vulnerable to server data leaks, access by third parties, or hacking.'
+      },
+      {
+        type: 'heading',
+        text: 'Bypassing the Cloud Entirely'
+      },
+      {
+        type: 'paragraph',
+        text: 'Instead of uploading your files to someone else\'s computer (which is all the cloud is), you can transfer them directly from your device\'s memory to the recipient\'s memory. This is called Peer-to-Peer (P2P) file sharing, and it runs natively in your browser using WebRTC technology.'
+      },
+      {
+        type: 'quote',
+        text: 'In P2P sharing, there is no file size limit because the file is never stored on a server. It streams directly between your devices in real-time, removing size limits and storage costs.'
+      },
+      {
+        type: 'heading',
+        text: 'How to Share Files on Nuke Chat'
+      },
+      {
+        type: 'paragraph',
+        text: 'Nuke Chat\'s P2P room mode makes this process incredibly simple. You create a room, share the room code, drag-and-drop your file, and it starts streaming directly to the other participants\' browsers. The moment they close their tab, the file is saved locally to their device, and no copy remains anywhere else on the web.'
+      },
+      {
+        type: 'heading',
+        text: 'Security & Encryption'
+      },
+      {
+        type: 'paragraph',
+        text: 'Because the connection is negotiated directly between your browsers, the file contents never touch our signaling servers. Furthermore, WebRTC connections are encrypted by default using DTLS (Datagram Transport Layer Security) and SRTP, securing your data from third-party network interception or ISP sniffing.'
+      },
+      {
+        type: 'heading',
+        text: 'Conclusion'
+      },
+      {
+        type: 'paragraph',
+        text: 'Sharing files shouldn\'t mean giving up ownership. By switching to browser-native P2P file sharing, you take control of your data, bypass cloud storage limitations, and keep your files completely private.'
+      }
+    ]
   }
 ];

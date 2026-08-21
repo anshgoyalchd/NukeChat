@@ -11,7 +11,8 @@ const data = JSON.stringify({
     'https://nuke-chat.pages.dev/#/blog',
     'https://nuke-chat.pages.dev/#/blog/p2p-webrtc-file-sharing',
     'https://nuke-chat.pages.dev/#/blog/client-side-aes-gcm-encryption',
-    'https://nuke-chat.pages.dev/#/blog/serverless-privacy-ephemeral-apps'
+    'https://nuke-chat.pages.dev/#/blog/serverless-privacy-ephemeral-apps',
+    'https://nuke-chat.pages.dev/#/blog/share-large-files-privately-no-cloud'
   ]
 });
 
