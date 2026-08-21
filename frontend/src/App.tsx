@@ -68,6 +68,83 @@ export default function App() {
     }
   }, []);
 
+  // 1.5 Dynamic SEO Page Title and Meta Description Updates
+  useEffect(() => {
+    let title = "Nuke Chat | Free Anonymous Chat Rooms & Temporary Ephemeral Messenger";
+    let description = "Nuke Chat is a secure, anonymous, accountless, and temporary web chat. Create end-to-end encrypted rooms or P2P mesh chats. Nuke the history anytime.";
+
+    if (currentHash === "#/privacy") {
+      title = "Privacy Policy | Nuke Chat";
+      description = "Read Nuke Chat's zero-knowledge privacy policy. We do not collect, request, or store any personal data, IP addresses, or message logs.";
+    } else if (currentHash === "#/terms") {
+      title = "Terms of Service | Nuke Chat";
+      description = "Read Nuke Chat's terms of service. Ephemeral, self-destructing rooms with client-side encryption and zero database retention.";
+    } else {
+      switch (screen) {
+        case "CREATE":
+          title = "Create Temporary Chat Room | Nuke Chat";
+          description = "Configure and launch a temporary, secure, anonymous chat room. Choose timed server-side encryption or WebRTC peer-to-peer mesh.";
+          break;
+        case "JOIN":
+          title = "Join Anonymous Chat Room | Nuke Chat";
+          description = "Enter a room code to join an anonymous, end-to-end encrypted or direct peer-to-peer temporary chat room.";
+          break;
+        case "IDENTITY":
+          title = "Set Chat Identity | Nuke Chat";
+          description = "Configure your temporary adjective-animal identity and avatar before entering the chat room.";
+          break;
+        case "ACTIVE_CHAT":
+          title = `Active Secure Chat (${roomCode || "Session"}) | Nuke Chat`;
+          description = "You are in an active, encrypted, temporary chat session. Disappears permanently when empty, expired, or nuked.";
+          break;
+        case "MATCHMAKING":
+          title = "Searching for Open Room | Nuke Chat";
+          description = "Finding an open room for random matchmaking. Please hold on...";
+          break;
+        case "NUKED":
+          title = "Chat Nuked & Destroyed | Nuke Chat";
+          description = "This room has been completely nuked. All messages and database records have been permanently wiped.";
+          break;
+        case "EXPIRED":
+          title = "Chat Expired | Nuke Chat";
+          description = "This chat room has expired and disappeared naturally. The server database and client cache have been cleared.";
+          break;
+        case "HOME":
+        default:
+          title = "Nuke Chat | Free Anonymous Chat Rooms & Temporary Ephemeral Messenger";
+          description = "Nuke Chat is a secure, anonymous, accountless, and temporary web chat. Create end-to-end encrypted rooms or P2P mesh chats. Nuke the history anytime.";
+          break;
+      }
+    }
+
+    document.title = title;
+    
+    // Update Meta Description
+    let metaDesc = document.querySelector('meta[name="description"]');
+    if (!metaDesc) {
+      metaDesc = document.createElement('meta');
+      metaDesc.setAttribute('name', 'description');
+      document.head.appendChild(metaDesc);
+    }
+    metaDesc.setAttribute('content', description);
+
+    // Update OpenGraph Title
+    let ogTitle = document.querySelector('meta[property="og:title"]');
+    if (ogTitle) ogTitle.setAttribute('content', title);
+    
+    // Update OpenGraph Description
+    let ogDesc = document.querySelector('meta[property="og:description"]');
+    if (ogDesc) ogDesc.setAttribute('content', description);
+
+    // Update Twitter Title
+    let twTitle = document.querySelector('meta[name="twitter:title"]');
+    if (twTitle) twTitle.setAttribute('content', title);
+
+    // Update Twitter Description
+    let twDesc = document.querySelector('meta[name="twitter:description"]');
+    if (twDesc) twDesc.setAttribute('content', description);
+  }, [screen, currentHash, roomCode]);
+
   // 2. Generate identity
   const handleGenerateIdentity = () => {
     const name = generateIdentity();
@@ -221,14 +298,16 @@ export default function App() {
   return (
     <div className="min-h-[100dvh] bg-background text-primaryText flex flex-col font-sans">
       {currentHash === "#/privacy" || currentHash === "#/terms" ? (
-        <LegalPage
-          type={currentHash === "#/privacy" ? "privacy" : "terms"}
-          onBack={() => {
-            window.location.hash = "";
-          }}
-        />
+        <main className="flex-grow flex flex-col">
+          <LegalPage
+            type={currentHash === "#/privacy" ? "privacy" : "terms"}
+            onBack={() => {
+              window.location.hash = "";
+            }}
+          />
+        </main>
       ) : (
-        <>
+        <main className="flex-grow flex flex-col justify-center">
           {/* 1. HOME SCREEN */}
           {screen === "HOME" && (
             <Home
@@ -330,7 +409,7 @@ export default function App() {
               </div>
             </div>
           )}
-        </>
+        </main>
       )}
     </div>
   );

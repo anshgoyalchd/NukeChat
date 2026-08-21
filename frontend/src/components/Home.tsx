@@ -57,7 +57,7 @@ export const Home: React.FC<HomeProps> = ({
       {activeRoomCode ? (
         <div className="w-full max-w-sm bg-surface border border-brand-peach/60 p-6 rounded-3xl shadow-lg shadow-black/5 text-center mb-8 transition-all duration-300">
           <div className="w-12 h-12 bg-brand-peach/30 rounded-2xl flex items-center justify-center mx-auto mb-4 text-brand-coral animate-bounce">
-            <Activity className="w-5 h-5" />
+            <Activity className="w-5 h-5" aria-hidden="true" />
           </div>
           <h3 className="text-base font-bold text-primaryText mb-1 tracking-tight">Active Session In Progress</h3>
           <p className="text-secondaryText mb-5 text-[11px] max-w-xs mx-auto leading-relaxed">
@@ -95,6 +95,7 @@ export const Home: React.FC<HomeProps> = ({
                   placeholder="E.G. MANGO-42"
                   disabled={isJoining}
                   autoFocus
+                  aria-label="Room Code"
                   className="flex-1 px-4 py-2.5 border-2 border-[#E4E2DD] focus:border-indigo-500 rounded-2xl text-center text-sm font-black tracking-widest outline-none bg-[#EEF2F6]/50 focus:bg-surface transition-all uppercase placeholder:font-bold placeholder:tracking-normal"
                 />
                 <button
@@ -103,7 +104,7 @@ export const Home: React.FC<HomeProps> = ({
                   className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs uppercase tracking-wider rounded-2xl shadow-md shadow-indigo-600/10 disabled:opacity-50 transition-all active:scale-95 shrink-0 flex items-center justify-center min-w-[70px]"
                 >
                   {isJoining ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
                   ) : (
                     "JOIN"
                   )}
@@ -127,7 +128,7 @@ export const Home: React.FC<HomeProps> = ({
               disabled={isJoining}
               className="flex-1 py-3.5 bg-gradient-to-r from-indigo-50 to-indigo-100/70 text-indigo-700 border border-indigo-200/50 hover:from-indigo-100/80 hover:to-indigo-200/70 rounded-full font-extrabold text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-sm shadow-indigo-100 active:scale-[0.97] transition-all disabled:opacity-50"
             >
-              <Plus className="w-4 h-4 stroke-[2.5]" />
+              <Plus className="w-4 h-4 stroke-[2.5]" aria-hidden="true" />
               Create Room
             </button>
 
@@ -137,7 +138,7 @@ export const Home: React.FC<HomeProps> = ({
               disabled={isJoining}
               className="flex-1 py-3.5 bg-gradient-to-r from-sky-50 to-sky-100/70 text-sky-700 border border-sky-200/50 hover:from-sky-100/80 hover:to-sky-200/70 rounded-full font-extrabold text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-sm shadow-sky-100 active:scale-[0.97] transition-all disabled:opacity-50"
             >
-              <Shuffle className="w-4 h-4 stroke-[2.5]" />
+              <Shuffle className="w-4 h-4 stroke-[2.5]" aria-hidden="true" />
               Random Match
             </button>
           </div>
@@ -148,7 +149,7 @@ export const Home: React.FC<HomeProps> = ({
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 w-full max-w-3xl border-t border-[#E4E2DD]/85 pt-8">
         <div className="flex flex-col items-center text-center p-2">
           <div className="w-8 h-8 bg-brand-lavender/35 rounded-lg flex items-center justify-center mb-2 text-indigo-600 shadow-xxs">
-            <Shield className="w-4 h-4" />
+            <Shield className="w-4 h-4" aria-hidden="true" />
           </div>
           <h4 className="font-extrabold text-xs text-primaryText mb-0.5 tracking-tight">Anonymous</h4>
           <p className="text-[10px] text-secondaryText leading-relaxed max-w-[140px]">No accounts, phone numbers, or profiles stored.</p>
@@ -156,7 +157,7 @@ export const Home: React.FC<HomeProps> = ({
 
         <div className="flex flex-col items-center text-center p-2">
           <div className="w-8 h-8 bg-brand-peach/35 rounded-lg flex items-center justify-center mb-2 text-brand-coral shadow-xxs">
-            <Clock className="w-4 h-4" />
+            <Clock className="w-4 h-4" aria-hidden="true" />
           </div>
           <h4 className="font-extrabold text-xs text-primaryText mb-0.5 tracking-tight">Temporary</h4>
           <p className="text-[10px] text-secondaryText leading-relaxed max-w-[140px]">Rooms disappear when empty or when expired.</p>
@@ -164,7 +165,7 @@ export const Home: React.FC<HomeProps> = ({
 
         <div className="flex flex-col items-center text-center p-2">
           <div className="w-8 h-8 bg-brand-mint/35 rounded-lg flex items-center justify-center mb-2 text-emerald-600 shadow-xxs">
-            <Shield className="w-4 h-4" />
+            <Shield className="w-4 h-4" aria-hidden="true" />
           </div>
           <h4 className="font-extrabold text-xs text-primaryText mb-0.5 tracking-tight">Encrypted</h4>
           <p className="text-[10px] text-secondaryText leading-relaxed max-w-[140px]">Timed messages use client-side AES-GCM encryption.</p>
@@ -172,7 +173,7 @@ export const Home: React.FC<HomeProps> = ({
 
         <div className="flex flex-col items-center text-center p-2">
           <div className="w-8 h-8 bg-brand-blue/35 rounded-lg flex items-center justify-center mb-2 text-sky-600 shadow-xxs">
-            <Zap className="w-4 h-4" />
+            <Zap className="w-4 h-4" aria-hidden="true" />
           </div>
           <h4 className="font-extrabold text-xs text-primaryText mb-0.5 tracking-tight">P2P Mesh</h4>
           <p className="text-[10px] text-secondaryText leading-relaxed max-w-[140px]">Direct browser-to-browser WebRTC connection.</p>
