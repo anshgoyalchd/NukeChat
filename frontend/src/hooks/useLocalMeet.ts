@@ -663,6 +663,42 @@ export const useLocalMeet = ({
     retryStudentConnectionRef.current = retryStudentConnection;
   }, [retryStudentConnection]);
 
+  // Sync offline room to Cloudflare DO when online
+  const syncOfflineRoomToCloud = useCallback(async () => {
+    const isOfflineCreated = typeof localStorage !== "undefined" && localStorage.getItem(`nukechat_offline_meet_${roomCode}`) === "true";
+    if (isOfflineCreated && isHost) {
+      try {
+        const backendUrl = import.meta.env.VITE_BACKEND_URL || "https://nuke-chat-backend.ansh-goyalchd.workers.dev";
+        const hostKey = localStorage.getItem(`nukechat_host_key_${roomCode}`);
+        const res = await fetch(`${backendUrl}/api/room/create`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            publicCode: roomCode,
+            hostKey,
+            type: "meet",
+            visibility: "private",
+            expiresInMinutes: 120,
+          }),
+        });
+        const data = await res.json();
+        if (data.success) {
+          console.log("[LocalMeet] Successfully registered offline room with Cloudflare DO!");
+          localStorage.removeItem(`nukechat_offline_meet_${roomCode}`);
+        }
+      } catch (e) {
+        console.warn("[LocalMeet] Auto-registration of offline room deferred:", e);
+      }
+    }
+  }, [isHost, roomCode]);
+
+  // Attempt sync on mount if online
+  useEffect(() => {
+    if (typeof navigator !== "undefined" && navigator.onLine) {
+      syncOfflineRoomToCloud();
+    }
+  }, [syncOfflineRoomToCloud]);
+
   // Listen for browser online/offline events to manage hybrid transitions and ICE restart
   useEffect(() => {
     const handleOnline = async () => {
@@ -670,30 +706,7 @@ export const useLocalMeet = ({
       setInternetState("online");
 
       // 1. If room was started offline, silently publish it to Cloudflare DO so global peers can join
-      const isOfflineCreated = typeof localStorage !== "undefined" && localStorage.getItem(`nukechat_offline_meet_${roomCode}`) === "true";
-      if (isOfflineCreated && isHost) {
-        try {
-          const backendUrl = import.meta.env.VITE_BACKEND_URL || "https://nuke-chat-backend.anshgoyalchd.workers.dev";
-          const res = await fetch(`${backendUrl}/api/room/create`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              publicCode: roomCode,
-              hostKey: localStorage.getItem(`nukechat_host_key_${roomCode}`),
-              type: "meet",
-              visibility: "private",
-              expiresInMinutes: 120,
-            }),
-          });
-          const data = await res.json();
-          if (data.success) {
-            console.log("[LocalMeet] Successfully registered offline room with Cloudflare DO!");
-            localStorage.removeItem(`nukechat_offline_meet_${roomCode}`);
-          }
-        } catch (e) {
-          console.warn("[LocalMeet] Failed to auto-register room on cloud:", e);
-        }
-      }
+      await syncOfflineRoomToCloud();
 
       // 2. Host: Restart ICE for any remote peers that stalled while WAN was down
       if (isHost && localStreamRef.current) {

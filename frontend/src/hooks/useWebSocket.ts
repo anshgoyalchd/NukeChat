@@ -140,20 +140,80 @@ export const useWebSocket = ({
     };
   }, [connect]);
 
+  const bcRef = useRef<BroadcastChannel | null>(null);
+
+  useEffect(() => {
+    if (typeof BroadcastChannel !== "undefined") {
+      const bc = new BroadcastChannel(`nukechat_room_bc_${roomCode}`);
+      bcRef.current = bc;
+      bc.onmessage = (event) => {
+        try {
+          const envelope: WsEnvelope = event.data;
+          if (envelope && envelope.senderId !== sessionId) {
+            onMessageRef.current(envelope);
+          }
+        } catch (e) {
+          console.warn("[BC] Error processing broadcast channel event:", e);
+        }
+      };
+
+      // Announce presence so offline peers / host on local tabs or device detect us immediately
+      const announceTimer = setTimeout(() => {
+        if (bcRef.current) {
+          bcRef.current.postMessage({
+            type: "PEER_ANNOUNCE",
+            senderId: sessionId,
+            timestamp: Date.now(),
+            payload: {
+              identity: identityName,
+              avatar: avatarUrl,
+            },
+          });
+        }
+      }, 100);
+
+      return () => {
+        clearTimeout(announceTimer);
+        bc.close();
+        bcRef.current = null;
+      };
+    }
+  }, [roomCode, sessionId, identityName, avatarUrl]);
+
   const sendMessage = useCallback((type: string, payload: any) => {
+    const envelope: WsEnvelope = {
+      type: type as any,
+      senderId: sessionId,
+      timestamp: Date.now(),
+      payload,
+    };
+
+    // 1. Send via WebSocket if open
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(
-        JSON.stringify({
-          type,
-          senderId: sessionId,
-          timestamp: Date.now(),
-          payload,
-        })
-      );
+      try {
+        wsRef.current.send(JSON.stringify(envelope));
+      } catch (e) {}
+    }
+
+    // 2. Broadcast via BroadcastChannel for 0 KB local / multi-tab offline peer discovery & signaling
+    if (bcRef.current) {
+      try {
+        bcRef.current.postMessage(envelope);
+      } catch (e) {}
     }
   }, [sessionId]);
 
   const closeAll = () => {
+    if (bcRef.current) {
+      try {
+        bcRef.current.postMessage({
+          type: WsEventType.PEER_LEFT,
+          senderId: sessionId,
+          timestamp: Date.now(),
+          payload: { participantId: sessionId },
+        });
+      } catch (e) {}
+    }
     if (wsRef.current) {
       try {
         if (wsRef.current.readyState === WebSocket.OPEN) {

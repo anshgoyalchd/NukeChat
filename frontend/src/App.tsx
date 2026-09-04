@@ -17,9 +17,9 @@ import { safeRandomUUID } from "./utils/uuid";
 // Dynamic Backend URL resolution (development vs production Pages deployment)
 const BACKEND_URL =
   import.meta.env.VITE_BACKEND_URL ||
-  (window.location.hostname === "localhost"
+  (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
     ? "http://localhost:8787"
-    : window.location.origin);
+    : "https://nuke-chat-backend.ansh-goyalchd.workers.dev");
 
 type AppScreen = "HOME" | "CREATE" | "JOIN" | "IDENTITY" | "ACTIVE_CHAT" | "MATCHMAKING" | "NUKED" | "EXPIRED";
 
@@ -378,11 +378,16 @@ export default function App() {
     setIsActionPending(true);
     setErrorMessage(null);
 
+    const storedHostKey = (typeof localStorage !== "undefined" && localStorage.getItem(`nukechat_host_key_${code}`)) || "";
+
     try {
       const res = await fetch(`${BACKEND_URL}/api/room/join`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ roomCode: code }),
+        body: JSON.stringify({
+          roomCode: code,
+          hostKey: storedHostKey || undefined,
+        }),
       });
 
       const data = await res.json();
@@ -396,7 +401,6 @@ export default function App() {
           localStorage.setItem(`nukechat_salt_${data.roomCode}`, data.salt);
         }
 
-        const storedHostKey = localStorage.getItem(`nukechat_host_key_${data.roomCode}`);
         if (storedHostKey) {
           setHostId(sessionId);
         } else if (data.hostId) {
@@ -404,6 +408,21 @@ export default function App() {
         }
 
         // Reuse cached identity or generate if empty
+        if (!identityName || !identityName.trim()) {
+          handleGenerateIdentity();
+        }
+        setScreen("IDENTITY");
+      } else if (res.status === 404 && code && code.trim().length === 6) {
+        // Hybrid offline / LAN fallback: If host created room offline and cloud hasn't received it yet,
+        // still enter Local Meet room so local / LAN / BroadcastChannel signaling connects immediately
+        console.log("[App] Room not on cloud, entering local LAN / offline mode for code:", code);
+        setRoomCode(code);
+        setRoomType("meet");
+        setExpiresAt(new Date(Date.now() + 2 * 3600 * 1000).toISOString());
+        setSalt("offline-salt");
+        if (storedHostKey) {
+          setHostId(sessionId);
+        }
         if (!identityName || !identityName.trim()) {
           handleGenerateIdentity();
         }
@@ -418,7 +437,6 @@ export default function App() {
       // Offline fallback: if network is offline or server unreachable, allow joining Local Meet via LAN
       if (code && code.trim().length >= 4) {
         console.log("[App] Offline room join initiated for code:", code);
-        const storedHostKey = localStorage.getItem(`nukechat_host_key_${code}`);
         setRoomCode(code);
         setRoomType("meet");
         setExpiresAt(new Date(Date.now() + 2 * 3600 * 1000).toISOString());

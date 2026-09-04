@@ -62,7 +62,15 @@ export const ActiveRoom: React.FC<ActiveRoomProps> = ({
   const [roomKey, setRoomKey] = useState<CryptoKey | null>(null);
   const roomKeyRef = useRef<CryptoKey | null>(null);
   const [messages, setMessages] = useState<UIMessage[]>([]);
-  const [participants, setParticipants] = useState<Participant[]>([]);
+  const [participants, setParticipants] = useState<Participant[]>(() => [
+    {
+      id: sessionId,
+      identity: identityName,
+      avatar: avatarUrl,
+      joinedAt: Date.now(),
+      isActive: true,
+    },
+  ]);
   const [nukeVotesState, setNukeVotesState] = useState({ votesCount: 0, neededVotes: 0 });
   const [iceServers, setIceServers] = useState<RTCIceServer[]>(DEFAULT_ICE_SERVERS);
   const [myIdentityName, setMyIdentityName] = useState<string>(identityName);
@@ -179,6 +187,57 @@ export const ActiveRoom: React.FC<ActiveRoomProps> = ({
       case "HOST_CHANGED": {
         if (envelope.payload?.hostId) {
           setCurrentHostId(envelope.payload.hostId);
+        }
+        break;
+      }
+
+      case "PEER_ANNOUNCE" as any: {
+        const studentId = envelope.senderId;
+        const studentName = envelope.payload?.identity || "Student";
+        const studentAvatar = envelope.payload?.avatar || "";
+
+        if (isCreator || currentHostId === sessionId) {
+          setParticipants((prev) => {
+            let updated = prev;
+            if (!updated.some((p) => p.id === studentId)) {
+              updated = [
+                ...prev,
+                {
+                  id: studentId,
+                  identity: studentName,
+                  avatar: studentAvatar,
+                  joinedAt: Date.now(),
+                  isActive: true,
+                },
+              ];
+            }
+            if (!updated.some((p) => p.id === sessionId)) {
+              updated = [
+                {
+                  id: sessionId,
+                  identity: myIdentityName,
+                  avatar: avatarUrl,
+                  joinedAt: Date.now(),
+                  isActive: true,
+                },
+                ...updated,
+              ];
+            }
+
+            // Broadcast authoritative ROOM_JOINED back so student and all peers are synchronized
+            sendMessage(WsEventType.ROOM_JOINED, {
+              participants: updated,
+              hostId: sessionId,
+              identity: studentName,
+            });
+
+            // Trigger local meet peer connection
+            if (roomType === "meet") {
+              localMeet.handleRoomJoined(studentId, studentName, studentAvatar, updated);
+            }
+
+            return updated;
+          });
         }
         break;
       }

@@ -160,6 +160,41 @@ app.post("/api/room/join", async (c) => {
   try {
     const checkRes = await stub.fetch(new Request("http://room/internal-check-join", { method: "POST" }));
     if (checkRes.status === 404) {
+      if (body.hostKey) {
+        // Auto-provision room for creator who created it offline
+        const internalRoomId = crypto.randomUUID();
+        const expiresAt = new Date(Date.now() + 2 * 3600 * 1000).toISOString();
+        const salt = Array.from(crypto.getRandomValues(new Uint8Array(8)))
+          .map((b) => b.toString(16).padStart(2, "0"))
+          .join("");
+
+        await stub.fetch(
+          new Request("http://room/internal-create", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              internalRoomId,
+              publicCode: roomCode,
+              type: "meet",
+              visibility: "private",
+              expiresAt,
+              salt,
+              hostKey: body.hostKey,
+            }),
+          })
+        );
+
+        return c.json({
+          success: true,
+          roomCode: roomCode,
+          internalRoomId,
+          type: "meet",
+          expiresAt,
+          salt,
+          participantCount: 0,
+          hostId: null,
+        });
+      }
       return c.json({ success: false, error: "Room not found or has been destroyed" }, 404);
     }
 

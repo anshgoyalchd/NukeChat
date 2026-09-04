@@ -144,15 +144,44 @@ export class RoomDO implements DurableObject {
       }
 
       // Read room details
-      const roomCursor = this.db.exec("SELECT room_type, state, host_id, host_key FROM room LIMIT 1");
-      const roomRows = Array.from(roomCursor) as any[];
-      if (roomRows.length === 0 || roomRows[0].state !== "ACTIVE") {
+      let roomCursor = this.db.exec("SELECT room_type, state, host_id, host_key FROM room LIMIT 1");
+      let roomRows = Array.from(roomCursor) as any[];
+      const providedHostKey = url.searchParams.get("hostKey");
+
+      if (roomRows.length === 0) {
+        if (providedHostKey) {
+          // Auto-provision offline room when creator connects via WebSocket
+          const internalRoomId = crypto.randomUUID();
+          const expiresAt = new Date(Date.now() + 2 * 3600 * 1000).toISOString();
+          const salt = Array.from(crypto.getRandomValues(new Uint8Array(8)))
+            .map((b) => b.toString(16).padStart(2, "0"))
+            .join("");
+
+          this.db.exec(
+            "INSERT INTO room (room_id, public_code, room_type, visibility, expires_at, state, salt, host_key, host_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            internalRoomId,
+            url.pathname.split("/").pop() || "meet",
+            "meet",
+            "private",
+            expiresAt,
+            "ACTIVE",
+            salt,
+            providedHostKey,
+            sessionId
+          );
+
+          await this.state.storage.setAlarm(new Date(expiresAt).getTime());
+          roomCursor = this.db.exec("SELECT room_type, state, host_id, host_key FROM room LIMIT 1");
+          roomRows = Array.from(roomCursor) as any[];
+        } else {
+          return new Response("Room not found or inactive", { status: 404 });
+        }
+      } else if (roomRows[0].state !== "ACTIVE") {
         return new Response("Room not found or inactive", { status: 404 });
       }
 
       let currentHostId = roomRows[0].host_id;
       const expectedHostKey = roomRows[0].host_key;
-      const providedHostKey = url.searchParams.get("hostKey");
 
       // Creator Reclaim Check:
       const isHostKeyMatch = !!(providedHostKey && expectedHostKey && providedHostKey === expectedHostKey);
