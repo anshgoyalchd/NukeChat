@@ -1,14 +1,16 @@
 import React, { useState } from "react";
-import { RefreshCw, ArrowLeft, Users } from "lucide-react";
+import { RefreshCw, ArrowLeft, Users, Pencil } from "lucide-react";
+import { RoomType } from "../../../shared/types";
 
 interface IdentitySetupProps {
   onBackClick: () => void;
   identityName: string;
   avatarUrl: string;
+  onNameChange?: (name: string) => void;
   onRegenerate: () => void;
   onConfirm: () => void;
   roomCode: string;
-  roomType: "timed" | "p2p";
+  roomType: RoomType;
   isConnecting: boolean;
 }
 
@@ -16,6 +18,7 @@ export const IdentitySetup: React.FC<IdentitySetupProps> = ({
   onBackClick,
   identityName,
   avatarUrl,
+  onNameChange,
   onRegenerate,
   onConfirm,
   roomCode,
@@ -56,12 +59,26 @@ export const IdentitySetup: React.FC<IdentitySetupProps> = ({
 
         {/* Card 2: Your Anonymous Profile (Clearly Labeled) */}
         <div className="bg-surface border border-[#E4E2DD] p-5 rounded-2xl flex flex-col items-center shadow-xxs">
-          <p className="text-[10px] font-bold uppercase tracking-widest text-secondaryText mb-3">YOUR ANONYMOUS ALIAS</p>
+          <p className="text-[10px] font-bold uppercase tracking-widest text-secondaryText mb-3">YOUR CHAT ALIAS</p>
           <div className="w-20 h-20 mb-3 select-none pointer-events-none rounded-2xl overflow-hidden shadow-md shadow-black/5 border border-[#E4E2DD] p-0.5 bg-white hover:scale-105 transition-transform duration-300">
             <img src={avatarUrl} alt="Avatar" className="w-full h-full object-cover rounded-xl" />
           </div>
-          <h3 className="text-base font-bold text-primaryText tracking-tight">{identityName}</h3>
-          <span className="text-[9px] text-secondaryText/80 font-bold uppercase tracking-wider mt-0.5">Temporary Nickname</span>
+          <div className="w-full max-w-xs mt-1">
+            <div className="relative flex items-center">
+              <input
+                type="text"
+                value={identityName}
+                onChange={(e) => onNameChange?.(e.target.value)}
+                maxLength={30}
+                placeholder="Enter your name"
+                className="w-full px-4 py-2 text-center text-base font-bold text-primaryText bg-black/5 border border-[#E4E2DD] rounded-xl focus:outline-none focus:border-[#6366F1] focus:ring-1 focus:ring-[#6366F1] transition-all"
+              />
+              <Pencil className="w-3.5 h-3.5 text-neutral-400 absolute right-3 pointer-events-none" />
+            </div>
+            <span className="text-[9px] text-secondaryText/80 font-bold uppercase tracking-wider mt-1.5 block text-center">
+              Auto-saved for future rooms
+            </span>
+          </div>
         </div>
 
         {/* Actions */}

@@ -23,9 +23,17 @@ export class RoomDO implements DurableObject {
           created_at INTEGER NOT NULL,
           expires_at TEXT NOT NULL,
           state TEXT NOT NULL,
-          salt TEXT NOT NULL
+          salt TEXT NOT NULL,
+          host_id TEXT,
+          host_key TEXT
         );
       `);
+      try {
+        this.db.exec("ALTER TABLE room ADD COLUMN host_id TEXT;");
+      } catch (e) {}
+      try {
+        this.db.exec("ALTER TABLE room ADD COLUMN host_key TEXT;");
+      } catch (e) {}
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS participants (
           participant_id TEXT PRIMARY KEY,
@@ -66,15 +74,17 @@ export class RoomDO implements DurableObject {
       const data: any = await request.json();
       
       this.db.exec(
-        `INSERT OR REPLACE INTO room (room_id, public_code, room_type, visibility, created_at, expires_at, state, salt)
-         VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE', ?)`,
+        `INSERT OR REPLACE INTO room (room_id, public_code, room_type, visibility, created_at, expires_at, state, salt, host_id, host_key)
+         VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?)`,
         data.internalRoomId,
         data.publicCode,
         data.type,
         data.visibility,
         Date.now(),
         data.expiresAt,
-        data.salt
+        data.salt,
+        data.hostId || null,
+        data.hostKey || null
       );
 
       // Set authoritative alarm for natural room expiration
@@ -86,7 +96,7 @@ export class RoomDO implements DurableObject {
 
     // REST: Verify room eligibility before WebSocket connect
     if (path === "/internal-check-join") {
-      const cursor = this.db.exec("SELECT room_id, room_type, expires_at, state, salt FROM room LIMIT 1");
+      const cursor = this.db.exec("SELECT room_id, room_type, expires_at, state, salt, host_id FROM room LIMIT 1");
       const rows = Array.from(cursor);
 
       if (rows.length === 0) {
@@ -108,8 +118,19 @@ export class RoomDO implements DurableObject {
         type: roomRow.room_type,
         expiresAt: roomRow.expires_at,
         participantCount: count,
-        salt: roomRow.salt
+        salt: roomRow.salt,
+        hostId: roomRow.host_id,
       });
+    }
+
+    // REST: Explicit clean departure (via beacon or REST)
+    if (path === "/internal-leave") {
+      const body: any = await request.json().catch(() => ({}));
+      const sessionId = body.sessionId;
+      if (sessionId) {
+        this.handleParticipantDisconnect(sessionId);
+      }
+      return Response.json({ success: true });
     }
 
     // WebSocket upgrade path
@@ -123,19 +144,51 @@ export class RoomDO implements DurableObject {
       }
 
       // Read room details
-      const roomCursor = this.db.exec("SELECT room_type, state FROM room LIMIT 1");
+      const roomCursor = this.db.exec("SELECT room_type, state, host_id, host_key FROM room LIMIT 1");
       const roomRows = Array.from(roomCursor) as any[];
       if (roomRows.length === 0 || roomRows[0].state !== "ACTIVE") {
         return new Response("Room not found or inactive", { status: 404 });
       }
 
-      // Check duplicate identity inside the room
-      const dupCursor = this.db.exec("SELECT COUNT(*) as count FROM participants WHERE identity_name = ? AND is_active = 1 AND participant_id != ?", identity, sessionId);
-      const isDuplicate = (Array.from(dupCursor)[0] as any).count > 0;
-      let finalIdentity = identity;
-      if (isDuplicate) {
-        // Append random 3-digit suffix if duplicate occurs
-        finalIdentity = `${identity.split(" ").slice(0, 2).join(" ")} ${Math.floor(100 + Math.random() * 900)}`;
+      let currentHostId = roomRows[0].host_id;
+      const expectedHostKey = roomRows[0].host_key;
+      const providedHostKey = url.searchParams.get("hostKey");
+
+      // Creator Reclaim Check:
+      const isHostKeyMatch = !!(providedHostKey && expectedHostKey && providedHostKey === expectedHostKey);
+
+      // Reclaim host role if creator provided valid hostKey, or if no host has been set yet
+      if (isHostKeyMatch || !currentHostId) {
+        const previousHostId = currentHostId;
+        currentHostId = sessionId;
+        this.db.exec("UPDATE room SET host_id = ?", sessionId);
+        if (previousHostId && previousHostId !== sessionId) {
+          this.db.exec("DELETE FROM participants WHERE participant_id = ?", previousHostId);
+          this.db.exec("DELETE FROM nuke_votes WHERE participant_id = ?", previousHostId);
+        }
+      }
+
+      if (isHostKeyMatch) {
+        // Broadcaster is reclaiming: remove any stale record with same identity or past hostId
+        this.db.exec("DELETE FROM participants WHERE identity_name = ? AND participant_id != ?", identity, sessionId);
+      }
+
+      // Check duplicate identity inside the room (case-insensitive deduplication)
+      const existingCursor = this.db.exec(
+        "SELECT identity_name FROM participants WHERE is_active = 1 AND participant_id != ?",
+        sessionId
+      );
+      const existingNames = new Set(
+        Array.from(existingCursor).map((row: any) => ((row.identity_name || "").trim().toLowerCase()))
+      );
+
+      let finalIdentity = (identity || "").trim() || "Anonymous";
+      if (existingNames.has(finalIdentity.toLowerCase())) {
+        let counter = 2;
+        while (existingNames.has(`${finalIdentity.toLowerCase()} #${counter}`)) {
+          counter++;
+        }
+        finalIdentity = `${finalIdentity} #${counter}`;
       }
 
       // Record participant in SQLite
@@ -174,11 +227,33 @@ export class RoomDO implements DurableObject {
                 avatar: avatar,
                 joinedAt: Date.now(),
                 participants: activeList,
+                hostId: currentHostId,
               },
             })
           );
+
+          // Send chat history for Timed Chat safely after handshake
+          if (roomRows[0].room_type === "timed") {
+            const histCursor = this.db.exec("SELECT message_id, sender_id, timestamp, nonce, ciphertext FROM messages ORDER BY timestamp ASC LIMIT 50");
+            const history = Array.from(histCursor).map((row: any) => ({
+              messageId: row.message_id,
+              senderId: row.sender_id,
+              timestamp: row.timestamp,
+              nonce: row.nonce,
+              ciphertext: row.ciphertext,
+            }));
+
+            server.send(
+              JSON.stringify({
+                type: "HISTORY",
+                senderId: "server",
+                timestamp: Date.now(),
+                payload: history,
+              })
+            );
+          }
         } catch (e) {
-          // Socket closed
+          // Socket closed during transition
         }
       }, 200);
 
@@ -192,29 +267,9 @@ export class RoomDO implements DurableObject {
           avatar: avatar,
           joinedAt: Date.now(),
           participants: activeList,
+          hostId: currentHostId,
         },
       }, sessionId);
-
-      // Send chat history for Timed Chat
-      if (roomRows[0].room_type === "timed") {
-        const histCursor = this.db.exec("SELECT message_id, sender_id, timestamp, nonce, ciphertext FROM messages ORDER BY timestamp ASC LIMIT 50");
-        const history = Array.from(histCursor).map((row: any) => ({
-          messageId: row.message_id,
-          senderId: row.sender_id,
-          timestamp: row.timestamp,
-          nonce: row.nonce,
-          ciphertext: row.ciphertext,
-        }));
-
-        server.send(
-          JSON.stringify({
-            type: "HISTORY",
-            senderId: "server",
-            timestamp: Date.now(),
-            payload: history,
-          })
-        );
-      }
 
       return new Response(null, { status: 101, webSocket: client });
     }
@@ -237,10 +292,23 @@ export class RoomDO implements DurableObject {
 
       switch (envelope.type) {
         case WsEventType.MESSAGE_SENT: {
-          // Verify room type is timed
           const roomCursor = this.db.exec("SELECT room_type FROM room LIMIT 1");
           const roomRows = Array.from(roomCursor) as any[];
-          if (roomRows.length === 0 || roomRows[0].room_type !== "timed") return;
+          if (roomRows.length === 0) return;
+
+          const currentType = roomRows[0].room_type;
+          if (currentType === "meet") {
+            // Broadcast classroom Q&A message
+            this.broadcast({
+              type: WsEventType.MESSAGE_BROADCAST,
+              senderId: sessionId,
+              timestamp: Date.now(),
+              payload: envelope.payload,
+            }, sessionId);
+            break;
+          }
+
+          if (currentType !== "timed") return;
 
           const payload = envelope.payload;
           
@@ -307,6 +375,13 @@ export class RoomDO implements DurableObject {
           break;
         }
 
+        case WsEventType.ROOM_LEFT:
+          this.handleParticipantDisconnect(sessionId);
+          try {
+            ws.close(1000, "User Left");
+          } catch (e) {}
+          break;
+
         case WsEventType.HEARTBEAT:
           ws.send(JSON.stringify({ type: "PONG", senderId: "server", timestamp: Date.now(), payload: {} }));
           break;
@@ -320,14 +395,18 @@ export class RoomDO implements DurableObject {
   webSocketClose(ws: WebSocket, _code: number, _reason: string, _wasClean: boolean) {
     const tags = this.state.getTags(ws);
     const sessionId = tags[0];
-    this.handleParticipantDisconnect(sessionId);
+    if (sessionId) {
+      this.handleParticipantDisconnect(sessionId);
+    }
   }
 
   // WebSocket Errored (Hibernation Hook)
   webSocketError(ws: WebSocket, _error: any) {
     const tags = this.state.getTags(ws);
     const sessionId = tags[0];
-    this.handleParticipantDisconnect(sessionId);
+    if (sessionId) {
+      this.handleParticipantDisconnect(sessionId);
+    }
   }
 
   // Natural DO Expiration Handler
@@ -337,10 +416,12 @@ export class RoomDO implements DurableObject {
 
   // Grace Period and Clean Departure Management
   private handleParticipantDisconnect(sessionId: string) {
+    if (!sessionId) return;
+
     // Set is_active = 0 in database
     this.db.exec("UPDATE participants SET is_active = 0 WHERE participant_id = ?", sessionId);
 
-    // Start 5-second grace period in memory
+    // Start 10-second grace period to allow brief reconnects (tab switch, network transition)
     setTimeout(() => {
       try {
         const checkCursor = this.db.exec("SELECT is_active FROM participants WHERE participant_id = ?", sessionId);
@@ -351,14 +432,16 @@ export class RoomDO implements DurableObject {
           this.db.exec("DELETE FROM participants WHERE participant_id = ?", sessionId);
           this.db.exec("DELETE FROM nuke_votes WHERE participant_id = ?", sessionId);
 
-          // Broadcast peer departure
+          const remainingParticipants = this.getActiveParticipants();
+
+          // Broadcast peer departure to all remaining clients
           this.broadcast({
             type: WsEventType.PEER_LEFT,
             senderId: sessionId,
             timestamp: Date.now(),
             payload: {
               participantId: sessionId,
-              participants: this.getActiveParticipants(),
+              participants: remainingParticipants,
             },
           });
 
@@ -366,15 +449,17 @@ export class RoomDO implements DurableObject {
           this.checkAutoDestruction();
         }
       } catch (err) {
-        // Ignored
+        console.error("[RoomDO] Disconnect handling error:", err);
       }
-    }, 5000);
+    }, 10000);
   }
 
   private checkAutoDestruction() {
     const activeCount = this.getActiveCount();
     if (activeCount === 0) {
-      this.destroyRoom("expired");
+      // Allow a 5-minute grace period before expiring if empty, so users can switch apps/share links
+      const graceAlarm = Date.now() + 5 * 60 * 1000;
+      this.state.storage.setAlarm(graceAlarm);
     }
   }
 

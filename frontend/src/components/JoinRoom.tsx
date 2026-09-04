@@ -45,7 +45,7 @@ export const JoinRoom: React.FC<JoinRoomProps> = ({
 
       <div className="bg-surface border border-[#E4E2DD] p-6 sm:p-8 rounded-3xl shadow-lg shadow-black/5">
         <h2 className="text-2xl font-bold tracking-tight text-primaryText mb-1.5">Join a Chat Room</h2>
-        <p className="text-xs text-secondaryText mb-6 leading-relaxed">Enter a room code to join an existing Timed or P2P session.</p>
+        <p className="text-xs text-secondaryText mb-6 leading-relaxed">Enter a 6-digit room code to join an existing session.</p>
 
         <form onSubmit={handleSubmit} className="space-y-6">
           {/* Room Code Input */}
@@ -57,7 +57,7 @@ export const JoinRoom: React.FC<JoinRoomProps> = ({
               type="text"
               value={code}
               onChange={handleInputChange}
-              placeholder="E.G. MANGO-42"
+              placeholder="E.G. 849201"
               required
               disabled={isJoining}
               autoFocus

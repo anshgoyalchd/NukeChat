@@ -12,6 +12,7 @@ import { BLOG_POSTS } from "./blog/posts";
 import { Shuffle, Loader2 } from "lucide-react";
 import { RoomType, RoomVisibility } from "../../shared/types";
 import { wipeDatabase } from "./utils/db";
+import { safeRandomUUID } from "./utils/uuid";
 
 // Dynamic Backend URL resolution (development vs production Pages deployment)
 const BACKEND_URL =
@@ -26,18 +27,38 @@ export default function App() {
   const [screen, setScreen] = useState<AppScreen>("HOME");
   const [sessionId, setSessionId] = useState("");
   const [activeRoomCode, setActiveRoomCode] = useState<string | null>(null);
+
+  const clearActiveSessionStorage = () => {
+    localStorage.removeItem("nukechat_active_room_code");
+    localStorage.removeItem("nukechat_active_room_expires_at");
+    localStorage.removeItem("nukechat_active_room_saved_at");
+    setActiveRoomCode(null);
+  };
   
   // Room parameters
   const [roomCode, setRoomCode] = useState("");
   const [roomType, setRoomType] = useState<RoomType>("timed");
   const [expiresAt, setExpiresAt] = useState("");
   const [salt, setSalt] = useState("");
+  const [hostId, setHostId] = useState<string>("");
   const [isActionPending, setIsActionPending] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Identity parameters
-  const [identityName, setIdentityName] = useState("");
-  const [avatarUrl, setAvatarUrl] = useState("");
+  // Identity parameters (cached in localStorage for persistent alias)
+  const [identityName, setIdentityName] = useState(() => {
+    try {
+      return localStorage.getItem("nukechat_user_identity_name") || "";
+    } catch (e) {
+      return "";
+    }
+  });
+  const [avatarUrl, setAvatarUrl] = useState(() => {
+    try {
+      return localStorage.getItem("nukechat_user_avatar_url") || "";
+    } catch (e) {
+      return "";
+    }
+  });
 
   // Matchmaking poll handle
   const [matchmakeInterval, setMatchmakeInterval] = useState<any>(null);
@@ -55,20 +76,132 @@ export default function App() {
 
   // 1. Initial configuration on application startup
   useEffect(() => {
+    // Ensure identity is present and cached
+    let cachedName = "";
+    try {
+      cachedName = localStorage.getItem("nukechat_user_identity_name") || "";
+    } catch (e) {}
+
+    if (!cachedName || !cachedName.trim()) {
+      const newName = generateIdentity();
+      const newAvatar = generateAvatar(newName);
+      setIdentityName(newName);
+      setAvatarUrl(newAvatar);
+      try {
+        localStorage.setItem("nukechat_user_identity_name", newName);
+        localStorage.setItem("nukechat_user_avatar_url", newAvatar);
+      } catch (e) {}
+    } else {
+      setIdentityName(cachedName);
+      let cachedAvatar = "";
+      try {
+        cachedAvatar = localStorage.getItem("nukechat_user_avatar_url") || "";
+      } catch (e) {}
+      if (!cachedAvatar) {
+        cachedAvatar = generateAvatar(cachedName);
+        try {
+          localStorage.setItem("nukechat_user_avatar_url", cachedAvatar);
+        } catch (e) {}
+      }
+      setAvatarUrl(cachedAvatar);
+    }
+
     // Session ID setup (persistent across browser tabs using sessionStorage)
     let sId = sessionStorage.getItem("nukechat_session_id");
     if (!sId) {
-      sId = crypto.randomUUID();
+      sId = safeRandomUUID();
       sessionStorage.setItem("nukechat_session_id", sId);
     }
     setSessionId(sId);
 
-    // One Room Rule verification
+    // One Room Rule verification with automatic expiration & server liveness check
     const activeCode = localStorage.getItem("nukechat_active_room_code");
+    const storedExpiresAt = localStorage.getItem("nukechat_active_room_expires_at");
+    const storedSavedAt = localStorage.getItem("nukechat_active_room_saved_at");
+
     if (activeCode) {
-      setActiveRoomCode(activeCode);
+      const now = Date.now();
+      const isExpiredByTimestamp = storedExpiresAt && new Date(storedExpiresAt).getTime() <= now;
+      const isExpiredByMaxAge = storedSavedAt && now - Number(storedSavedAt) > 2 * 60 * 60 * 1000;
+
+      if (isExpiredByTimestamp || isExpiredByMaxAge) {
+        clearActiveSessionStorage();
+      } else {
+        // Query server to verify if the room is truly active
+        fetch(`${BACKEND_URL}/api/room/join`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ roomCode: activeCode }),
+        })
+          .then((res) => res.json())
+          .then((data) => {
+            if (data.success) {
+              setActiveRoomCode(activeCode);
+              if (data.expiresAt) {
+                localStorage.setItem("nukechat_active_room_expires_at", data.expiresAt);
+              }
+            } else {
+              clearActiveSessionStorage();
+            }
+          })
+          .catch(() => {
+            setActiveRoomCode(activeCode);
+          });
+      }
     }
   }, []);
+
+  // 1.2 Direct Join URL Listener (Supports ?join=CODE, #/join/CODE, and /join/CODE)
+  useEffect(() => {
+    if (!sessionId) return;
+
+    let codeToJoin: string | null = null;
+
+    let hostKeyParam: string | null = null;
+
+    // 1. Check Hash: #/join/ABC-123 or #/join/ABC-123?hostKey=XYZ
+    if (currentHash.startsWith("#/join/")) {
+      const parts = currentHash.replace("#/join/", "").split("?");
+      codeToJoin = parts[0].trim().toUpperCase();
+      if (parts[1]) {
+        const hashParams = new URLSearchParams(parts[1]);
+        hostKeyParam = hashParams.get("hostKey");
+      }
+    }
+
+    // 2. Check Query param: ?join=ABC-123 (Preferred for messaging apps like WhatsApp/Telegram)
+    if (!codeToJoin && typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const queryParam = params.get("join");
+      if (queryParam) {
+        codeToJoin = queryParam.trim().toUpperCase();
+      }
+      if (!hostKeyParam) {
+        hostKeyParam = params.get("hostKey");
+      }
+    }
+
+    // 3. Check Path: /join/ABC-123
+    if (!codeToJoin && typeof window !== "undefined") {
+      const path = window.location.pathname;
+      if (path.startsWith("/join/")) {
+        codeToJoin = path.replace("/join/", "").split("/")[0].trim().toUpperCase();
+      }
+    }
+
+    if (codeToJoin) {
+      if (hostKeyParam) {
+        try {
+          localStorage.setItem(`nukechat_host_key_${codeToJoin}`, hostKeyParam);
+        } catch (e) {}
+      }
+      handleJoinRoom(codeToJoin);
+      // Clean URL address bar without reloading
+      try {
+        window.history.replaceState(null, "", window.location.pathname);
+      } catch (e) {}
+    }
+  }, [sessionId, currentHash]);
 
   // 1.5 Dynamic SEO Page Title and Meta Description Updates
   useEffect(() => {
@@ -157,12 +290,27 @@ export default function App() {
     if (twDesc) twDesc.setAttribute('content', description);
   }, [screen, currentHash, roomCode]);
 
-  // 2. Generate identity
+  // 2. Generate new identity or update cached alias
   const handleGenerateIdentity = () => {
     const name = generateIdentity();
     const avatar = generateAvatar(name);
     setIdentityName(name);
     setAvatarUrl(avatar);
+    try {
+      localStorage.setItem("nukechat_user_identity_name", name);
+      localStorage.setItem("nukechat_user_avatar_url", avatar);
+    } catch (e) {}
+  };
+
+  const handleUpdateIdentityName = (newName: string) => {
+    const sanitized = newName.slice(0, 30);
+    setIdentityName(sanitized);
+    const updatedAvatar = generateAvatar(sanitized.trim() || "Anonymous");
+    setAvatarUrl(updatedAvatar);
+    try {
+      localStorage.setItem("nukechat_user_identity_name", sanitized);
+      localStorage.setItem("nukechat_user_avatar_url", updatedAvatar);
+    } catch (e) {}
   };
 
   // 3. API Call: Create Room
@@ -183,9 +331,19 @@ export default function App() {
         setRoomType(params.type);
         setExpiresAt(data.expiresAt);
         setSalt(data.salt);
+        if (data.salt) {
+          localStorage.setItem(`nukechat_salt_${data.roomCode}`, data.salt);
+        }
+        setHostId(sessionId);
 
-        // Prepare initial identity
-        handleGenerateIdentity();
+        if (data.hostKey) {
+          localStorage.setItem(`nukechat_host_key_${data.roomCode}`, data.hostKey);
+        }
+
+        // Reuse cached identity or generate if empty
+        if (!identityName || !identityName.trim()) {
+          handleGenerateIdentity();
+        }
         setScreen("IDENTITY");
       } else {
         setErrorMessage(data.error || "Failed to create room. Please try again.");
@@ -214,12 +372,29 @@ export default function App() {
         setRoomCode(data.roomCode);
         setRoomType(data.type);
         setExpiresAt(data.expiresAt);
-        setSalt(data.salt);
+        const resolvedSalt = data.salt || localStorage.getItem(`nukechat_salt_${data.roomCode}`) || "";
+        setSalt(resolvedSalt);
+        if (data.salt) {
+          localStorage.setItem(`nukechat_salt_${data.roomCode}`, data.salt);
+        }
 
-        handleGenerateIdentity();
+        const storedHostKey = localStorage.getItem(`nukechat_host_key_${data.roomCode}`);
+        if (storedHostKey) {
+          setHostId(sessionId);
+        } else if (data.hostId) {
+          setHostId(data.hostId);
+        }
+
+        // Reuse cached identity or generate if empty
+        if (!identityName || !identityName.trim()) {
+          handleGenerateIdentity();
+        }
         setScreen("IDENTITY");
       } else {
         setErrorMessage(data.error || "Failed to join room.");
+        if (code.toUpperCase() === activeRoomCode?.toUpperCase()) {
+          clearActiveSessionStorage();
+        }
       }
     } catch (err) {
       setErrorMessage("Network error checking room parameters.");
@@ -248,7 +423,10 @@ export default function App() {
             setExpiresAt(data.expiresAt);
             setSalt(data.salt);
 
-            handleGenerateIdentity();
+            // Reuse cached identity or generate if empty
+            if (!identityName || !identityName.trim()) {
+              handleGenerateIdentity();
+            }
             setScreen("IDENTITY");
           }
         }
@@ -273,6 +451,14 @@ export default function App() {
   // 6. Enter Active Chat Room
   const handleEnterChat = () => {
     localStorage.setItem("nukechat_active_room_code", roomCode);
+    localStorage.setItem("nukechat_active_room_saved_at", Date.now().toString());
+    if (expiresAt) {
+      localStorage.setItem("nukechat_active_room_expires_at", expiresAt);
+    }
+    const storedHostKey = localStorage.getItem(`nukechat_host_key_${roomCode}`);
+    if (storedHostKey) {
+      setHostId(sessionId);
+    }
     setActiveRoomCode(roomCode);
     setScreen("ACTIVE_CHAT");
   };
@@ -285,8 +471,7 @@ export default function App() {
 
   // 8. Leave and wipe active room details
   const handleLeaveRoom = () => {
-    localStorage.removeItem("nukechat_active_room_code");
-    setActiveRoomCode(null);
+    clearActiveSessionStorage();
     wipeDatabase().catch(() => {});
     setScreen("HOME");
   };
@@ -294,16 +479,14 @@ export default function App() {
   // 9. Nuke Event
   const handleNukeTriggered = () => {
     setScreen("NUKED");
-    localStorage.removeItem("nukechat_active_room_code");
-    setActiveRoomCode(null);
+    clearActiveSessionStorage();
     wipeDatabase().catch(() => {});
   };
 
   // 10. Natural Expiry Event
   const handleRoomExpired = () => {
     setScreen("EXPIRED");
-    localStorage.removeItem("nukechat_active_room_code");
-    setActiveRoomCode(null);
+    clearActiveSessionStorage();
     wipeDatabase().catch(() => {});
   };
 
@@ -380,6 +563,7 @@ export default function App() {
               onBackClick={() => setScreen("HOME")}
               identityName={identityName}
               avatarUrl={avatarUrl}
+              onNameChange={handleUpdateIdentityName}
               onRegenerate={handleGenerateIdentity}
               onConfirm={handleEnterChat}
               roomCode={roomCode}
@@ -398,6 +582,7 @@ export default function App() {
               avatarUrl={avatarUrl}
               salt={salt}
               expiresAt={expiresAt}
+              hostId={hostId}
               onGoHome={handleLeaveRoom}
               onRoomNuked={handleNukeTriggered}
               onRoomExpired={handleRoomExpired}

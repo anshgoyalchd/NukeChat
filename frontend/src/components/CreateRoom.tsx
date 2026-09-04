@@ -49,28 +49,40 @@ export const CreateRoom: React.FC<CreateRoomProps> = ({
           {/* Professional Segmented Control for Room Type */}
           <div>
             <label className="block text-[10px] font-bold uppercase tracking-wider text-secondaryText mb-2">Room Type</label>
-            <div className="bg-[#EEF2F6] p-1 rounded-full border border-[#E4E2DD] flex">
+            <div className="bg-[#EEF2F6] p-1 rounded-2xl border border-[#E4E2DD] grid grid-cols-3 gap-1">
               <button
                 type="button"
                 onClick={() => setRoomType("timed")}
-                className={`flex-1 py-2 text-xs font-bold rounded-full transition-all duration-300 ${
+                className={`py-2 text-[11px] font-bold rounded-xl transition-all duration-300 ${
                   roomType === "timed"
                     ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/10"
                     : "text-secondaryText hover:text-primaryText"
                 }`}
               >
-                Timed (E2EE)
+                Timed
               </button>
               <button
                 type="button"
                 onClick={() => setRoomType("p2p")}
-                className={`flex-1 py-2 text-xs font-bold rounded-full transition-all duration-300 ${
+                className={`py-2 text-[11px] font-bold rounded-xl transition-all duration-300 ${
                   roomType === "p2p"
                     ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/10"
                     : "text-secondaryText hover:text-primaryText"
                 }`}
               >
-                P2P Mesh (Direct)
+                P2P Mesh
+              </button>
+              <button
+                type="button"
+                onClick={() => setRoomType("meet")}
+                className={`py-2 text-[11px] font-bold rounded-xl transition-all duration-300 flex items-center justify-center gap-1 ${
+                  roomType === "meet"
+                    ? "bg-emerald-600 text-white shadow-md shadow-emerald-600/10"
+                    : "text-secondaryText hover:text-primaryText"
+                }`}
+              >
+                <span>Local Meet</span>
+                <span className="text-[9px] px-1 py-0.2 bg-emerald-500/30 rounded text-white font-black">LAN</span>
               </button>
             </div>
           </div>
@@ -147,6 +159,21 @@ export const CreateRoom: React.FC<CreateRoomProps> = ({
                 </div>
               </div>
             </div>
+          ) : roomType === "meet" ? (
+            /* Local Meet Classroom explanation */
+            <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-200/80 text-[11px] text-emerald-900 space-y-2 animate-fadeIn">
+              <div className="flex items-center gap-2">
+                <span className="px-2 py-0.5 bg-emerald-200/80 text-emerald-800 font-extrabold text-[9px] rounded-full uppercase tracking-wider">
+                  Offline Classroom LAN
+                </span>
+              </div>
+              <p className="font-bold text-emerald-950 text-xs">Zero-Internet Screen & Audio Broadcast</p>
+              <ul className="list-disc pl-4 space-y-1 text-[10px] text-emerald-800/90 leading-relaxed">
+                <li>Streams teacher screen (slides, VS Code, PDFs) & microphone directly over local Wi-Fi.</li>
+                <li>Uses <b>0 KB</b> internet data during the lecture.</li>
+                <li>High-efficiency Star Topology supports up to <b>60 students</b> simultaneously.</li>
+              </ul>
+            </div>
           ) : (
             /* P2P explanation text */
             <div className="p-3.5 bg-brand-blue/20 rounded-2xl border border-brand-blue/40 text-[11px] text-secondaryText space-y-1.5 animate-fadeIn">
@@ -163,13 +190,19 @@ export const CreateRoom: React.FC<CreateRoomProps> = ({
           <button
             type="submit"
             disabled={isCreating}
-            className="w-full py-3 bg-[#6366F1] hover:bg-[#4F46E5] text-white font-semibold text-xs tracking-wider uppercase rounded-full shadow-md shadow-indigo-600/10 disabled:opacity-50 flex items-center justify-center gap-2 active:scale-[0.98] active:translate-y-[1px] transition-all duration-200"
+            className={`w-full py-3 font-semibold text-xs tracking-wider uppercase rounded-full shadow-md disabled:opacity-50 flex items-center justify-center gap-2 active:scale-[0.98] active:translate-y-[1px] transition-all duration-200 ${
+              roomType === "meet"
+                ? "bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-600/10"
+                : "bg-[#6366F1] hover:bg-[#4F46E5] text-white shadow-indigo-600/10"
+            }`}
           >
             {isCreating ? (
               <>
                 <Loader2 className="w-4 h-4 animate-spin" />
                 Creating Room...
               </>
+            ) : roomType === "meet" ? (
+              "START LOCAL MEET"
             ) : (
               "CREATE CHAT"
             )}

@@ -50,9 +50,10 @@ export const useWebSocket = ({
  
     // Convert HTTP url to WS/WSS URL
     let wsBaseUrl = backendUrl.replace(/^http/, "ws");
+    const hostKey = (typeof localStorage !== "undefined" && localStorage.getItem(`nukechat_host_key_${roomCode}`)) || "";
     const wsUrl = `${wsBaseUrl}/ws/room/${roomCode}?sessionId=${sessionId}&identity=${encodeURIComponent(
       identityName
-    )}&avatar=${encodeURIComponent(avatarUrl)}`;
+    )}&avatar=${encodeURIComponent(avatarUrl)}${hostKey ? `&hostKey=${encodeURIComponent(hostKey)}` : ""}`;
  
     try {
       const ws = new WebSocket(wsUrl);
@@ -104,27 +105,40 @@ export const useWebSocket = ({
           return;
         }
  
-        // Auto-reconnect with exponential backoff (max 5 attempts, up to 10s delay)
-        if (reconnectAttemptsRef.current < 5) {
-          const delay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 10000);
-          reconnectAttemptsRef.current += 1;
-          
-          if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
-          reconnectTimeoutRef.current = setTimeout(() => {
-            connect();
-          }, delay);
-        } else {
-          setConnectionError("Connection lost permanently. Please refresh.");
-        }
+        // Auto-reconnect with fast retry (never give up permanently while mounted, retry every 3s max)
+        const delay = Math.min(500 * Math.pow(1.3, Math.min(reconnectAttemptsRef.current, 5)), 3000);
+        reconnectAttemptsRef.current += 1;
+        
+        if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = setTimeout(() => {
+          connect();
+        }, delay);
       };
  
       ws.onerror = () => {
         setIsConnected(false);
       };
     } catch (err: any) {
-      setConnectionError(err.message || "Failed to create WebSocket.");
+      // Re-schedule connection attempt if network is offline
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = setTimeout(() => {
+        connect();
+      }, 5000);
     }
   }, [roomCode, sessionId, identityName, avatarUrl, backendUrl]);
+
+  // Immediately reconnect when network connectivity returns
+  useEffect(() => {
+    const handleOnline = () => {
+      console.log("[WebSocket] Network restored, reconnecting immediately...");
+      reconnectAttemptsRef.current = 0;
+      connect();
+    };
+    window.addEventListener("online", handleOnline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+    };
+  }, [connect]);
 
   const sendMessage = useCallback((type: string, payload: any) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -141,6 +155,18 @@ export const useWebSocket = ({
 
   const closeAll = () => {
     if (wsRef.current) {
+      try {
+        if (wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(
+            JSON.stringify({
+              type: WsEventType.ROOM_LEFT,
+              senderId: sessionId,
+              timestamp: Date.now(),
+              payload: {},
+            })
+          );
+        }
+      } catch (e) {}
       wsRef.current.close(1000, "Clean Close");
       wsRef.current = null;
     }

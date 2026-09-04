@@ -25,21 +25,30 @@ app.use(
 );
 
 function generateRoomCode(): string {
-  const word = WORDS[Math.floor(Math.random() * WORDS.length)];
-  const num = Math.floor(1000 + Math.random() * 9000); // 1000 to 9999
-  return `${word}-${num}`;
+  // Cryptographically random 6-digit numeric code: 100000 to 999999
+  const buf = new Uint32Array(1);
+  crypto.getRandomValues(buf);
+  const codeNum = 100000 + (buf[0] % 900000);
+  return codeNum.toString();
 }
 
 export function normalizeRoomCode(code: string): string {
-  const clean = code.toUpperCase().replace(/[^A-Z0-9]/g, "");
-  if (clean.length > 4) {
-    const word = clean.slice(0, -4);
-    const num = clean.slice(-4);
+  const clean = (code || "").trim();
+  // If it's a 6-digit number (or has formatting like 123-456), extract the 6 digits
+  const digits = clean.replace(/\D/g, "");
+  if (digits.length === 6) {
+    return digits;
+  }
+  // Backwards compatibility for legacy WORD-1234 formats
+  const cleanLegacy = clean.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (cleanLegacy.length > 4) {
+    const word = cleanLegacy.slice(0, -4);
+    const num = cleanLegacy.slice(-4);
     if (/^\d{4}$/.test(num)) {
       return `${word}-${num}`;
     }
   }
-  return code.toUpperCase().trim();
+  return clean.toUpperCase();
 }
 
 // REST: Create Room
@@ -49,14 +58,14 @@ app.post("/api/room/create", async (c) => {
   const visibility: RoomVisibility = body.visibility || "private";
   let expiresInMinutes = parseInt(body.expiresInMinutes || "30");
 
-  if (!["timed", "p2p"].includes(type)) {
+  if (!["timed", "p2p", "meet"].includes(type)) {
     return c.json({ success: false, error: "Invalid room type" }, 400);
   }
   if (!["private", "open"].includes(visibility)) {
     return c.json({ success: false, error: "Invalid visibility" }, 400);
   }
-  if (type === "p2p") {
-    // P2P doesn't have custom long expirations, default to 2 hours authoritative DO alarm
+  if (type === "p2p" || type === "meet") {
+    // P2P and Local Meet default to 2 hours authoritative DO alarm
     expiresInMinutes = 120;
   } else if (expiresInMinutes > 120 || expiresInMinutes <= 0) {
     return c.json({ success: false, error: "Expiration must be between 15 minutes and 2 hours" }, 400);
@@ -65,6 +74,7 @@ app.post("/api/room/create", async (c) => {
   // Generate public Room Code and internal parameters
   const publicCode = generateRoomCode();
   const internalRoomId = crypto.randomUUID();
+  const hostKey = crypto.randomUUID();
   
   // Ephemeral Salt for key derivation on clients
   const salt = Array.from(crypto.getRandomValues(new Uint8Array(8)))
@@ -89,6 +99,7 @@ app.post("/api/room/create", async (c) => {
           visibility,
           expiresAt,
           salt,
+          hostKey,
         }),
       })
     );
@@ -125,6 +136,7 @@ app.post("/api/room/create", async (c) => {
       internalRoomId,
       salt,
       expiresAt,
+      hostKey,
     });
   } catch (err: any) {
     return c.json({ success: false, error: err.message || "Failed to create room" }, 500);
@@ -153,10 +165,12 @@ app.post("/api/room/join", async (c) => {
     const capacityLimit =
       checkData.type === "p2p"
         ? parseInt(c.env.MAX_ROOM_CAPACITY_P2P || "12")
+        : checkData.type === "meet"
+        ? parseInt((c.env as any).MAX_ROOM_CAPACITY_MEET || "60")
         : parseInt(c.env.MAX_ROOM_CAPACITY_TIMED || "50");
 
     if (checkData.participantCount >= capacityLimit) {
-      return c.json({ success: false, error: `This chat room is full (${capacityLimit} max).` }, 403);
+      return c.json({ success: false, error: `This room is full (${capacityLimit} max).` }, 403);
     }
 
     return c.json({
@@ -167,10 +181,32 @@ app.post("/api/room/join", async (c) => {
       expiresAt: checkData.expiresAt,
       salt: checkData.salt,
       participantCount: checkData.participantCount,
+      hostId: checkData.hostId,
     });
   } catch (err: any) {
     return c.json({ success: false, error: "Unable to verify room eligibility." }, 500);
   }
+});
+
+// REST / Beacon: Immediate Participant Departure
+app.post("/api/room/leave", async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  let roomCode = body.roomCode;
+  const sessionId = body.sessionId;
+  if (!roomCode || !sessionId) {
+    return c.json({ success: false }, 400);
+  }
+  roomCode = normalizeRoomCode(roomCode);
+  const id = c.env.ROOM_DO.idFromName(roomCode);
+  const stub = c.env.ROOM_DO.get(id);
+  await stub.fetch(
+    new Request("http://room/internal-leave", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId }),
+    })
+  ).catch(() => {});
+  return c.json({ success: true });
 });
 
 // REST: Random Chat Matchmaking
@@ -289,48 +325,42 @@ app.get("/api/ice-servers", async (c) => {
     }
   }
 
-  // Fallback: Generate credentials locally using the free community Open Relay Project secret
+  // Return reliable STUN and TURN relay configuration
   try {
-    const secret = "openrelayprojectsecret";
-    const validitySeconds = 86400; // 1 day expiration
-    const timestamp = Math.floor(Date.now() / 1000) + validitySeconds;
-    const username = `${timestamp}:nukechat`;
-
-    const encoder = new TextEncoder();
-    const keyMaterial = await crypto.subtle.importKey(
-      "raw",
-      encoder.encode(secret),
-      { name: "HMAC", hash: "SHA-1" },
-      false,
-      ["sign"]
-    );
-
-    const signature = await crypto.subtle.sign(
-      "HMAC",
-      keyMaterial,
-      encoder.encode(username)
-    );
-
-    // Convert signature ArrayBuffer to Base64 safely
-    const binary = String.fromCharCode(...new Uint8Array(signature));
-    const password = btoa(binary);
-
     const iceServers = [
-      { urls: "stun:staticauth.openrelay.metered.ca:80" },
+      { urls: "stun:stun.cloudflare.com:3478" },
+      { urls: "stun:stun.l.google.com:19302" },
+      { urls: "stun:stun1.l.google.com:19302" },
+      { urls: "stun:stun2.l.google.com:19302" },
       {
-        urls: "turn:staticauth.openrelay.metered.ca:80",
-        username: username,
-        credential: password,
+        urls: "turn:openrelay.metered.ca:80",
+        username: "openrelayproject",
+        credential: "openrelayproject",
       },
       {
-        urls: "turn:staticauth.openrelay.metered.ca:443",
-        username: username,
-        credential: password,
+        urls: "turn:openrelay.metered.ca:443",
+        username: "openrelayproject",
+        credential: "openrelayproject",
       },
       {
-        urls: "turn:staticauth.openrelay.metered.ca:443?transport=tcp",
-        username: username,
-        credential: password,
+        urls: "turn:openrelay.metered.ca:80?transport=tcp",
+        username: "openrelayproject",
+        credential: "openrelayproject",
+      },
+      {
+        urls: "turn:openrelay.metered.ca:443?transport=tcp",
+        username: "openrelayproject",
+        credential: "openrelayproject",
+      },
+      {
+        urls: "turns:openrelay.metered.ca:443?transport=tcp",
+        username: "openrelayproject",
+        credential: "openrelayproject",
+      },
+      {
+        urls: "turns:openrelay.metered.ca:5349?transport=tcp",
+        username: "openrelayproject",
+        credential: "openrelayproject",
       },
     ];
 

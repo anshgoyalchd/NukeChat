@@ -1,0 +1,16 @@
+{
+  "name": "OfflineMeet",
+  "short_name": "OfflineMeet",
+  "description": "100% Offline Star LAN Classroom Broadcasting with Zero Internet",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0a0a0a",
+  "theme_color": "#0a0a0a",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

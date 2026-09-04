@@ -1,4 +1,4 @@
-export type RoomType = 'timed' | 'p2p';
+export type RoomType = 'timed' | 'p2p' | 'meet';
 export type RoomVisibility = 'private' | 'open';
 export type RoomState = 'CREATING' | 'ACTIVE' | 'EXPIRING' | 'NUKING' | 'DESTROYED';
 

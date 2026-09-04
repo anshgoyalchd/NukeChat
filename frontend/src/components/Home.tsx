@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Shield, Clock, Zap, Shuffle, Plus, ArrowRight, Activity, Loader2 } from "lucide-react";
+import { Shield, Clock, Zap, Shuffle, Plus, ArrowRight, Activity, Loader2, KeyRound } from "lucide-react";
 
 interface HomeProps {
   onCreateClick: () => void;
@@ -25,38 +25,41 @@ export const Home: React.FC<HomeProps> = ({
   const [code, setCode] = useState("");
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    let val = e.target.value.toUpperCase();
-    val = val.replace(/[^A-Z0-9-]/g, "");
-    setCode(val);
+    // Sanitize input: uppercase alphanumeric only, max 6 chars
+    const cleaned = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
+    setCode(cleaned);
   };
 
   const handleJoinSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!code.trim() || isJoining) return;
+    if (!code.trim()) return;
     onJoinSubmit(code.trim());
   };
 
   return (
-    <div className="max-w-4xl mx-auto px-6 py-6 md:py-10 flex flex-col items-center justify-center min-h-[90dvh] w-full select-none animate-fadeIn">
-      {/* Brand Floating Header Badge */}
-      <div className="mb-6 text-center">
-        <div className="inline-flex items-center gap-2.5 px-4 py-1.5 bg-brand-peach/40 border border-brand-peach/60 rounded-full text-brand-coral font-bold text-xxs tracking-wider uppercase mb-3 shadow-sm shadow-brand-coral/5 backdrop-blur-sm">
-          <span>💥</span> NUKE CHAT
-        </div>
-        
-        <h1 className="text-3xl sm:text-4xl md:text-5xl font-extrabold tracking-tight mb-2 text-primaryText leading-[1.1]">
-          Nuke Chat: Talk. Share. <span className="text-brand-coral font-black">Nuke It.</span>
-        </h1>
-        
-        <p className="text-xs sm:text-sm text-secondaryText max-w-md mx-auto leading-relaxed font-normal">
-          Nuke Chat provides secure, temporary, and anonymous messaging rooms for people who don't want permanent conversation histories. Zero signup, zero tracking.
-        </p>
+    <div className="flex flex-col items-center justify-center min-h-[90dvh] px-4 py-8 max-w-4xl mx-auto text-center font-sans select-none animate-fadeIn">
+      {/* Branding Tag */}
+      <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-brand-peach/40 border border-brand-coral/20 text-brand-coral text-xs font-black uppercase tracking-wider mb-6 shadow-xxs">
+        <span>💥</span>
+        <span>NUKE CHAT</span>
       </div>
 
-      {/* Active Session Warning Card */}
+      {/* Main Hero Header */}
+      <h1 className="text-3xl sm:text-4xl md:text-5xl font-black text-primaryText tracking-tight mb-3">
+        Nuke Chat: Talk. Share. <br className="hidden sm:inline" />
+        <span className="text-brand-coral">Nuke It.</span>
+      </h1>
+
+      {/* Description Text */}
+      <p className="text-secondaryText text-xs sm:text-sm max-w-lg mb-8 leading-relaxed font-medium">
+        Nuke Chat provides secure, temporary, and anonymous messaging rooms for people who don't want permanent conversation histories. Zero signup, zero tracking.
+      </p>
+
+      {/* Active Session Warning or Join Action Area */}
       {activeRoomCode ? (
-        <div className="w-full max-w-sm bg-surface border border-brand-peach/60 p-6 rounded-3xl shadow-lg shadow-black/5 text-center mb-8 transition-all duration-300">
-          <div className="w-12 h-12 bg-brand-peach/30 rounded-2xl flex items-center justify-center mx-auto mb-4 text-brand-coral animate-bounce">
+        /* Rejoin / Active Session Card */
+        <div className="w-full max-w-sm mb-8 bg-surface border border-[#E4E2DD] p-5 rounded-3xl shadow-lg shadow-black/3 text-center animate-scaleUp">
+          <div className="w-10 h-10 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-3 border border-indigo-100">
             <Activity className="w-5 h-5" aria-hidden="true" />
           </div>
           <h3 className="text-base font-bold text-primaryText mb-1 tracking-tight">Active Session In Progress</h3>
@@ -87,17 +90,19 @@ export const Home: React.FC<HomeProps> = ({
               <label className="block text-[9px] font-bold uppercase tracking-widest text-secondaryText mb-2 text-left px-1">
                 Enter Room Code
               </label>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={code}
-                  onChange={handleInputChange}
-                  placeholder="E.G. MANGO-42"
-                  disabled={isJoining}
-                  autoFocus
-                  aria-label="Room Code"
-                  className="flex-1 px-4 py-2.5 border-2 border-[#E4E2DD] focus:border-indigo-500 rounded-2xl text-center text-sm font-black tracking-widest outline-none bg-[#EEF2F6]/50 focus:bg-surface transition-all uppercase placeholder:font-bold placeholder:tracking-normal"
-                />
+              <div className="flex gap-2 relative">
+                <div className="relative flex-1 flex items-center">
+                  <KeyRound className="w-4 h-4 text-secondaryText/50 absolute left-3.5 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={code}
+                    onChange={handleInputChange}
+                    placeholder="e.g. 849201"
+                    disabled={isJoining}
+                    aria-label="Room Code"
+                    className="w-full pl-10 pr-3 py-2.5 border-2 border-[#E4E2DD] focus:border-indigo-500 rounded-2xl text-left text-sm font-bold tracking-wider outline-none bg-[#EEF2F6]/50 focus:bg-surface transition-all uppercase placeholder:normal-case placeholder:font-medium placeholder:tracking-normal placeholder:text-secondaryText/40"
+                  />
+                </div>
                 <button
                   type="submit"
                   disabled={!code.trim() || isJoining}

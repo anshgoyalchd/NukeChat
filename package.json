@@ -2,8 +2,18 @@
   "name": "nuke-chat",
   "version": "1.0.0",
   "private": true,
+  "scripts": {
+    "offline:start": "node offline-meet/server/host-daemon.cjs",
+    "offline:build": "npm run build --prefix offline-meet/client",
+    "test:classroom": "node scripts/simulate-classroom.cjs",
+    "test:50": "node scripts/simulate-classroom.cjs --count=50"
+  },
   "workspaces": [
     "backend",
     "frontend"
-  ]
+  ],
+  "dependencies": {
+    "selfsigned": "^5.5.0",
+    "ws": "^8.21.3"
+  }
 }
