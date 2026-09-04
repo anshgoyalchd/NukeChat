@@ -71,10 +71,12 @@ app.post("/api/room/create", async (c) => {
     return c.json({ success: false, error: "Expiration must be between 15 minutes and 2 hours" }, 400);
   }
 
-  // Generate public Room Code and internal parameters
-  const publicCode = generateRoomCode();
+  // Generate public Room Code or accept existing offline room code
+  const publicCode = (body.publicCode && /^[A-Za-z0-9\-]{4,12}$/.test(body.publicCode))
+    ? body.publicCode.toUpperCase()
+    : generateRoomCode();
   const internalRoomId = crypto.randomUUID();
-  const hostKey = crypto.randomUUID();
+  const hostKey = body.hostKey || crypto.randomUUID();
   
   // Ephemeral Salt for key derivation on clients
   const salt = Array.from(crypto.getRandomValues(new Uint8Array(8)))

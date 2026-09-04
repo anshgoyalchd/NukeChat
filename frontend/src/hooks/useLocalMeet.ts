@@ -44,6 +44,21 @@ export const useLocalMeet = ({
   const [starViewersCount, setStarViewersCount] = useState(0);
   const [relayViewersCount, setRelayViewersCount] = useState(0);
   const [connectionTopology, setConnectionTopology] = useState<"star_lan" | "relay" | null>(null);
+  const [internetState, setInternetState] = useState<"online" | "offline">(
+    typeof navigator !== "undefined" && navigator.onLine ? "online" : "offline"
+  );
+
+  // Automatically synchronize star and relay viewer counts whenever topology map changes
+  useEffect(() => {
+    let star = 0;
+    let relay = 0;
+    Object.values(peerTopologyMap).forEach((topo) => {
+      if (topo === "star_lan") star++;
+      else if (topo === "relay") relay++;
+    });
+    setStarViewersCount(star);
+    setRelayViewersCount(relay);
+  }, [peerTopologyMap]);
 
   // Remote media for Students
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
@@ -102,40 +117,54 @@ export const useLocalMeet = ({
     localStreamRef.current = localStream;
   }, [localStream]);
 
-  // Clean a student connection (Host side)
-  const cleanStudentPeer = useCallback((studentId: string) => {
-    const pc = studentPeersRef.current[studentId];
-    if (pc) {
-      pc.close();
-      delete studentPeersRef.current[studentId];
-      delete studentCandidatesQueueRef.current[studentId];
-      if (studentDataChannelsRef.current[studentId]) {
-        try {
-          studentDataChannelsRef.current[studentId].close();
-        } catch (e) {}
-        delete studentDataChannelsRef.current[studentId];
+  // Clean a student connection (Host side) with Star LAN peer preservation
+  const cleanStudentPeer = useCallback(
+    (studentId: string, force = false) => {
+      const isDirectLan = peerTopologyMap[studentId] === "star_lan";
+      // If this is a direct Star LAN peer and internet was lost, preserve it!
+      if (isDirectLan && typeof navigator !== "undefined" && !navigator.onLine && !force) {
+        console.log(`[LocalMeet] Preserving direct Star LAN peer ${studentId} while offline.`);
+        return;
       }
-      delete lanParticipantsRef.current[studentId];
-      setLanParticipants(Object.values(lanParticipantsRef.current));
-      setPeerTopologyMap((prev) => {
-        const next = { ...prev };
-        delete next[studentId];
-        return next;
-      });
-      setActiveViewersCount(Object.keys(studentPeersRef.current).length);
-    }
-  }, []);
 
-  // Synchronize studentPeersRef with authoritative participants list (only when participants list is non-empty)
+      const pc = studentPeersRef.current[studentId];
+      if (pc) {
+        pc.close();
+        delete studentPeersRef.current[studentId];
+        delete studentCandidatesQueueRef.current[studentId];
+        if (studentDataChannelsRef.current[studentId]) {
+          try {
+            studentDataChannelsRef.current[studentId].close();
+          } catch (e) {}
+          delete studentDataChannelsRef.current[studentId];
+        }
+        delete lanParticipantsRef.current[studentId];
+        setLanParticipants(Object.values(lanParticipantsRef.current));
+        setPeerTopologyMap((prev) => {
+          const next = { ...prev };
+          delete next[studentId];
+          return next;
+        });
+        setActiveViewersCount(Object.keys(studentPeersRef.current).length);
+      }
+    },
+    [peerTopologyMap]
+  );
+
+  // Synchronize studentPeersRef with authoritative participants list
   useEffect(() => {
     if (!isHost || !participants || participants.length === 0) return;
+    // When offline, preserve active direct LAN peers!
+    if (typeof navigator !== "undefined" && !navigator.onLine) return;
+
     const currentParticipantIds = new Set(participants.map((p) => p.id));
     Object.keys(studentPeersRef.current).forEach((studentId) => {
+      if (peerTopologyMap[studentId] === "star_lan") return;
       if (!currentParticipantIds.has(studentId)) {
         cleanStudentPeer(studentId);
       }
     });
-  }, [isHost, participants, cleanStudentPeer]);
+  }, [isHost, participants, cleanStudentPeer, peerTopologyMap]);
 
   // Setup host-side LAN DataChannel for offline metadata & chat exchange
   const setupHostDataChannel = useCallback((studentId: string, dc: RTCDataChannel) => {
@@ -634,21 +663,73 @@ export const useLocalMeet = ({
     retryStudentConnectionRef.current = retryStudentConnection;
   }, [retryStudentConnection]);
 
-  // Listen for browser online/offline events to immediately re-evaluate topologies and reconnect if network interface changed
+  // Listen for browser online/offline events to manage hybrid transitions and ICE restart
   useEffect(() => {
-    const handleNetworkChange = () => {
-      console.log("[LocalMeet] Network state changed (online/offline). Re-evaluating connections...");
+    const handleOnline = async () => {
+      console.log("[LocalMeet] Internet restored! Reconnecting cloud signaling & remote peers...");
+      setInternetState("online");
+
+      // 1. If room was started offline, silently publish it to Cloudflare DO so global peers can join
+      const isOfflineCreated = typeof localStorage !== "undefined" && localStorage.getItem(`nukechat_offline_meet_${roomCode}`) === "true";
+      if (isOfflineCreated && isHost) {
+        try {
+          const backendUrl = import.meta.env.VITE_BACKEND_URL || "https://nuke-chat-backend.anshgoyalchd.workers.dev";
+          const res = await fetch(`${backendUrl}/api/room/create`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              publicCode: roomCode,
+              hostKey: localStorage.getItem(`nukechat_host_key_${roomCode}`),
+              type: "meet",
+              visibility: "private",
+              expiresInMinutes: 120,
+            }),
+          });
+          const data = await res.json();
+          if (data.success) {
+            console.log("[LocalMeet] Successfully registered offline room with Cloudflare DO!");
+            localStorage.removeItem(`nukechat_offline_meet_${roomCode}`);
+          }
+        } catch (e) {
+          console.warn("[LocalMeet] Failed to auto-register room on cloud:", e);
+        }
+      }
+
+      // 2. Host: Restart ICE for any remote peers that stalled while WAN was down
+      if (isHost && localStreamRef.current) {
+        for (const studentId of Object.keys(studentPeersRef.current)) {
+          // Direct Star LAN peers are already fine on local LAN; only remote relay peers need iceRestart
+          if (peerTopologyMap[studentId] !== "star_lan") {
+            const pc = studentPeersRef.current[studentId];
+            if (pc && pc.signalingState !== "closed") {
+              console.log(`[LocalMeet] Triggering ICE restart for remote student ${studentId}`);
+              await sendOfferToStudent(studentId, pc, true /* iceRestart */);
+            }
+          }
+        }
+      }
+
+      // 3. Student: If remote, retry connection to host
       if (!isHost && hostPeerRef.current) {
         retryStudentConnectionRef.current();
       }
     };
-    window.addEventListener("online", handleNetworkChange);
-    window.addEventListener("offline", handleNetworkChange);
-    return () => {
-      window.removeEventListener("online", handleNetworkChange);
-      window.removeEventListener("offline", handleNetworkChange);
+
+    const handleOffline = () => {
+      console.log("[LocalMeet] Internet disconnected. Star LAN peers remain active.");
+      setInternetState("offline");
+      if (!isHost && connectionTopology !== "star_lan") {
+        setStreamHealth("interrupted");
+      }
     };
-  }, [isHost]);
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, [isHost, roomCode, peerTopologyMap, connectionTopology, sendOfferToStudent]);
 
   // Handle incoming signaling messages with candidate queueing
   const handleSignal = useCallback(async (senderId: string, signal: any) => {
@@ -1216,5 +1297,6 @@ export const useLocalMeet = ({
     handlePeerLeft,
     lanParticipants,
     broadcastDirectMessage,
+    internetState,
   };
 };

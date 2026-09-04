@@ -349,6 +349,24 @@ export default function App() {
         setErrorMessage(data.error || "Failed to create room. Please try again.");
       }
     } catch (err) {
+      // 100% Offline fallback for Local Meet:
+      if (params.type === "meet") {
+        console.log("[App] Offline meet creation triggered without internet.");
+        const offlineCode = Math.floor(100000 + Math.random() * 900000).toString();
+        const offlineHostKey = safeRandomUUID();
+        setRoomCode(offlineCode);
+        setRoomType("meet");
+        setExpiresAt(new Date(Date.now() + 2 * 3600 * 1000).toISOString());
+        setSalt("offline-salt");
+        setHostId(sessionId);
+        localStorage.setItem(`nukechat_host_key_${offlineCode}`, offlineHostKey);
+        localStorage.setItem(`nukechat_offline_meet_${offlineCode}`, "true");
+        if (!identityName || !identityName.trim()) {
+          handleGenerateIdentity();
+        }
+        setScreen("IDENTITY");
+        return;
+      }
       setErrorMessage("Network error connecting to Nuke Chat server.");
     } finally {
       setIsActionPending(false);
@@ -397,6 +415,23 @@ export default function App() {
         }
       }
     } catch (err) {
+      // Offline fallback: if network is offline or server unreachable, allow joining Local Meet via LAN
+      if (code && code.trim().length >= 4) {
+        console.log("[App] Offline room join initiated for code:", code);
+        const storedHostKey = localStorage.getItem(`nukechat_host_key_${code}`);
+        setRoomCode(code);
+        setRoomType("meet");
+        setExpiresAt(new Date(Date.now() + 2 * 3600 * 1000).toISOString());
+        setSalt("offline-salt");
+        if (storedHostKey) {
+          setHostId(sessionId);
+        }
+        if (!identityName || !identityName.trim()) {
+          handleGenerateIdentity();
+        }
+        setScreen("IDENTITY");
+        return;
+      }
       setErrorMessage("Network error checking room parameters.");
     } finally {
       setIsActionPending(false);

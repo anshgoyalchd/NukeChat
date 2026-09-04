@@ -64,6 +64,7 @@ interface LocalMeetProps {
   stopBroadcast: () => void;
   toggleMic: () => Promise<void>;
   retryStudentConnection: () => void;
+  internetState?: "online" | "offline";
 }
 
 export const LocalMeet: React.FC<LocalMeetProps> = ({
@@ -102,6 +103,7 @@ export const LocalMeet: React.FC<LocalMeetProps> = ({
   stopBroadcast,
   toggleMic,
   retryStudentConnection,
+  internetState = "online",
 }) => {
   const isMobileDevice =
     typeof navigator !== "undefined" &&
@@ -587,6 +589,19 @@ export const LocalMeet: React.FC<LocalMeetProps> = ({
               {isDirectLAN ? "LAN" : "Relay"}
             </span>
           </div>
+
+          {/* Dual Audience Split Counter for Host */}
+          {isHost && (
+            <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-neutral-900 border border-neutral-850 text-[11px] font-bold">
+              <span className="text-amber-300 flex items-center gap-1" title="Direct Star LAN peers (0 KB data)">
+                ⭐ {effectiveStarViewers} LAN
+              </span>
+              <span className="text-neutral-600">|</span>
+              <span className="text-indigo-300 flex items-center gap-1" title="Global Cloud Relay peers">
+                🌐 {relayViewersCount} Cloud
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Right Controls (Icon-Focused, Clean & Responsive) */}
@@ -704,6 +719,14 @@ export const LocalMeet: React.FC<LocalMeetProps> = ({
                     <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-amber-500 text-black px-4 py-2 rounded-2xl font-black text-xs uppercase tracking-wider flex items-center gap-2 shadow-2xl z-30 animate-bounce">
                       <Hand className="w-4 h-4 fill-current" />
                       <span>{recentHandRaise.senderName} raised hand!</span>
+                    </div>
+                  )}
+
+                  {/* Mid-call Internet Drop Banner for Host */}
+                  {internetState === "offline" && (
+                    <div className="absolute top-16 left-1/2 -translate-x-1/2 bg-amber-500 text-black px-4 py-1.5 rounded-2xl text-xs font-black uppercase tracking-wider flex items-center gap-2 shadow-2xl z-30 animate-pulse whitespace-nowrap">
+                      <WifiOff className="w-4 h-4" />
+                      <span>Internet Disconnected • Local students ({effectiveStarViewers}) streaming offline</span>
                     </div>
                   )}
                 </div>

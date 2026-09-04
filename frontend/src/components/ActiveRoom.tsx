@@ -637,6 +637,7 @@ export const ActiveRoom: React.FC<ActiveRoomProps> = ({
         stopBroadcast={localMeet.stopBroadcast}
         toggleMic={localMeet.toggleMic}
         retryStudentConnection={localMeet.retryStudentConnection}
+        internetState={localMeet.internetState}
       />
     );
   }
