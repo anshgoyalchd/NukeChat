@@ -1,17 +1,13 @@
 
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
         <defs>
-          <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#18181B" />
-            <stop offset="100%" stop-color="#09090B" />
-          </linearGradient>
           <linearGradient id="border" x1="0%" y1="0%" x2="100%" y2="100%">
             <stop offset="0%" stop-color="#F43F5E" />
             <stop offset="50%" stop-color="#6366F1" />
             <stop offset="100%" stop-color="#10B981" />
           </linearGradient>
         </defs>
-        <rect width="512" height="512" rx="112.64" fill="url(#bg)" />
+        <rect width="512" height="512" rx="112.64" fill="#FFFFFF" />
         <rect x="15.36" y="15.36" width="481.28" height="481.28" rx="102.4" fill="none" stroke="url(#border)" stroke-width="15.36" />
         <text x="50%" y="54%" font-size="266.24" text-anchor="middle" dominant-baseline="middle" font-family="Apple Color Emoji, Segoe UI Emoji, sans-serif">💣</text>
       </svg>

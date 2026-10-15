@@ -19,16 +19,25 @@ if (fs.existsSync(assetsDir)) {
   }
 }
 
+// Gather all root static files in dist
+const rootFiles = fs.readdirSync(distDir).filter((file) => {
+  const fullPath = path.join(distDir, file);
+  return (
+    !fs.statSync(fullPath).isDirectory() &&
+    file !== 'sw.js' &&
+    file !== '_redirects' &&
+    !file.startsWith('google') &&
+    !file.startsWith('63de')
+  );
+}).map(f => `/${f}`);
+
 // Base static files to precache
-const staticAssets = [
+const staticAssets = Array.from(new Set([
   '/',
   '/index.html',
-  '/manifest.webmanifest',
-  '/icon.svg',
-  '/robots.txt',
-  '/sitemap.xml',
+  ...rootFiles,
   ...assetFiles,
-];
+]));
 
 console.log('[build-sw] Found assets to precache:', staticAssets);
 

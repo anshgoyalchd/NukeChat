@@ -1,5 +1,6 @@
 import React, { useState } from "react";
-import { Shield, Clock, Zap, Shuffle, Plus, ArrowRight, Activity, Loader2, KeyRound } from "lucide-react";
+import { Shield, Clock, Zap, Shuffle, Plus, ArrowRight, Activity, Loader2, KeyRound, Download } from "lucide-react";
+import { usePWAInstall } from "../hooks/usePWAInstall";
 
 interface HomeProps {
   onCreateClick: () => void;
@@ -40,12 +41,48 @@ export const Home: React.FC<HomeProps> = ({
     onJoinSubmit(code.trim());
   };
 
+  const { canInstall, installApp, showIOSTooltip, setShowIOSTooltip, isIOS } = usePWAInstall();
+
   return (
     <div className="flex flex-col items-center justify-center min-h-[90dvh] px-4 py-8 max-w-4xl mx-auto text-center font-sans select-none animate-fadeIn">
-      {/* Branding Tag */}
-      <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-brand-peach/40 border border-brand-coral/20 text-brand-coral text-xs font-black uppercase tracking-wider mb-6 shadow-xxs">
-        <span>💥</span>
-        <span>NUKE CHAT</span>
+      {/* Branding Tag & PWA Install Button */}
+      <div className="flex flex-wrap items-center justify-center gap-2.5 mb-6">
+        <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-brand-peach/40 border border-brand-coral/20 text-brand-coral text-xs font-black uppercase tracking-wider shadow-xxs">
+          <span>💥</span>
+          <span>NUKE CHAT</span>
+        </div>
+
+        {canInstall && (
+          <div className="relative">
+            <button
+              type="button"
+              onClick={installApp}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white dark:bg-surface border border-indigo-200 hover:border-indigo-400 text-indigo-600 hover:text-indigo-700 text-xs font-bold transition-all shadow-xxs active:scale-95 cursor-pointer"
+              title="Install Nuke Chat app for 100% offline access"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Install App</span>
+            </button>
+
+            {isIOS && showIOSTooltip && (
+              <div className="absolute top-full mt-2 left-1/2 -translate-x-1/2 w-64 p-3 bg-neutral-900 text-white text-[11px] rounded-2xl shadow-2xl z-50 text-left border border-neutral-700 animate-fadeIn">
+                <div className="flex items-center justify-between mb-1 font-bold">
+                  <span>Install on iPhone/iPad</span>
+                  <button
+                    type="button"
+                    onClick={() => setShowIOSTooltip(false)}
+                    className="text-neutral-400 hover:text-white px-1"
+                  >
+                    ✕
+                  </button>
+                </div>
+                <p className="text-neutral-300 leading-snug">
+                  Tap the <span className="font-bold text-white">Share (⎙)</span> icon at the bottom of Safari, then select <span className="font-bold text-white">"Add to Home Screen"</span>.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Main Hero Header */}
