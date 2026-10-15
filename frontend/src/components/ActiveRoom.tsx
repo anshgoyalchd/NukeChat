@@ -56,8 +56,13 @@ export const ActiveRoom: React.FC<ActiveRoomProps> = ({
   onRoomExpired,
   backendUrl,
 }) => {
-  const storedHostKey = (typeof localStorage !== "undefined" && localStorage.getItem(`nukechat_host_key_${roomCode}`)) || "";
-  const isCreator = !!storedHostKey;
+  const isCreator =
+    (typeof sessionStorage !== "undefined" &&
+      sessionStorage.getItem(`nukechat_is_creator_${roomCode}`) === "true") ||
+    false;
+  const storedHostKey = isCreator
+    ? (typeof localStorage !== "undefined" && localStorage.getItem(`nukechat_host_key_${roomCode}`)) || ""
+    : "";
   const [currentHostId, setCurrentHostId] = useState<string>(isCreator ? sessionId : (hostId || ""));
   const [roomKey, setRoomKey] = useState<CryptoKey | null>(null);
   const roomKeyRef = useRef<CryptoKey | null>(null);
@@ -350,7 +355,7 @@ export const ActiveRoom: React.FC<ActiveRoomProps> = ({
   }, [getOrDeriveRoomKey, roomType, participants]);
 
   // WebSocket Hook
-  const { isConnected, sendMessage } = useWebSocket({
+  const { isConnected, isLocalDaemon, sendMessage, reconnect } = useWebSocket({
     roomCode,
     sessionId,
     identityName,
@@ -505,6 +510,10 @@ export const ActiveRoom: React.FC<ActiveRoomProps> = ({
     identityName: myIdentityName,
     avatarUrl,
     onDirectChatMessage: handleDirectLANMessage,
+    isConnected,
+    isLocalDaemon,
+    backendUrl,
+    onWanRestored: reconnect,
   });
 
   // Send Message coordinator
@@ -572,14 +581,12 @@ export const ActiveRoom: React.FC<ActiveRoomProps> = ({
       // 1. Broadcast over direct WebRTC LAN DataChannels (100% offline local Wi-Fi)
       localMeet.broadcastDirectMessage(chatPayload);
 
-      // 2. Broadcast over WebSocket if connected
-      if (isConnected) {
-        sendMessage(WsEventType.MESSAGE_SENT, {
-          messageId,
-          text,
-          senderName: myIdentityName,
-        });
-      }
+      // 2. Broadcast over WebSocket & BroadcastChannel
+      sendMessage(WsEventType.MESSAGE_SENT, {
+        messageId,
+        text,
+        senderName: myIdentityName,
+      });
     } else {
       // P2P Text Send
       const msgId = webRTC.sendP2PText(text, myIdentityName, avatarUrl);
@@ -693,10 +700,15 @@ export const ActiveRoom: React.FC<ActiveRoomProps> = ({
         startScreenShare={localMeet.startScreenShare}
         startCameraShare={localMeet.startCameraShare}
         switchCameraFacingMode={localMeet.switchCameraFacingMode}
+        cycleCameraLens={localMeet.cycleCameraLens}
         stopBroadcast={localMeet.stopBroadcast}
         toggleMic={localMeet.toggleMic}
         retryStudentConnection={localMeet.retryStudentConnection}
         internetState={localMeet.internetState}
+        isLocalDaemon={isLocalDaemon}
+        generateOfflineOfferQr={localMeet.generateOfflineOfferQr}
+        applyOfflineOfferAndGenerateAnswerQr={localMeet.applyOfflineOfferAndGenerateAnswerQr}
+        applyOfflineAnswerQr={localMeet.applyOfflineAnswerQr}
       />
     );
   }

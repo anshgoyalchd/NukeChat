@@ -5,6 +5,8 @@ interface HomeProps {
   onCreateClick: () => void;
   onRandomClick: () => void;
   onJoinSubmit: (code: string) => void;
+  onJoinOfflineSubmit?: (code: string) => void;
+  offlineCandidateCode?: string | null;
   activeRoomCode: string | null;
   onRejoinClick: () => void;
   onLeaveSessionClick: () => void;
@@ -16,6 +18,8 @@ export const Home: React.FC<HomeProps> = ({
   onCreateClick,
   onRandomClick,
   onJoinSubmit,
+  onJoinOfflineSubmit,
+  offlineCandidateCode,
   activeRoomCode,
   onRejoinClick,
   onLeaveSessionClick,
@@ -25,8 +29,8 @@ export const Home: React.FC<HomeProps> = ({
   const [code, setCode] = useState("");
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    // Sanitize input: uppercase alphanumeric only, max 6 chars
-    const cleaned = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
+    // Allow ONLY numbers (no alphabets, no special characters), max 6 digits
+    const cleaned = e.target.value.replace(/\D/g, "").slice(0, 6);
     setCode(cleaned);
   };
 
@@ -95,12 +99,26 @@ export const Home: React.FC<HomeProps> = ({
                   <KeyRound className="w-4 h-4 text-secondaryText/50 absolute left-3.5 pointer-events-none" />
                   <input
                     type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    maxLength={6}
                     value={code}
                     onChange={handleInputChange}
+                    onKeyDown={(e) => {
+                      // Do not let user enter any alphabet or special char, only numbers
+                      if (
+                        !/[\d]/.test(e.key) &&
+                        !["Backspace", "Tab", "Enter", "ArrowLeft", "ArrowRight", "Delete"].includes(e.key) &&
+                        !e.ctrlKey &&
+                        !e.metaKey
+                      ) {
+                        e.preventDefault();
+                      }
+                    }}
                     placeholder="e.g. 849201"
                     disabled={isJoining}
                     aria-label="Room Code"
-                    className="w-full pl-10 pr-3 py-2.5 border-2 border-[#E4E2DD] focus:border-indigo-500 rounded-2xl text-left text-sm font-bold tracking-wider outline-none bg-[#EEF2F6]/50 focus:bg-surface transition-all uppercase placeholder:normal-case placeholder:font-medium placeholder:tracking-normal placeholder:text-secondaryText/40"
+                    className="w-full pl-10 pr-3 py-2.5 border-2 border-[#E4E2DD] focus:border-indigo-500 rounded-2xl text-left text-sm font-bold tracking-wider outline-none bg-[#EEF2F6]/50 focus:bg-surface transition-all placeholder:normal-case placeholder:font-medium placeholder:tracking-normal placeholder:text-secondaryText/40"
                   />
                 </div>
                 <button
@@ -117,10 +135,25 @@ export const Home: React.FC<HomeProps> = ({
               </div>
             </div>
 
-            {/* Error Message inside Card */}
-            {errorMessage && (
-              <div className="p-3 bg-brand-peach/30 border border-brand-coral/20 text-[10px] text-brand-coral rounded-xl font-semibold text-left leading-normal animate-fadeIn">
-                ⚠️ {errorMessage}
+            {/* Error Message inside Card with Offline Recovery Action (shown only AFTER clicking join) */}
+            {(errorMessage || (offlineCandidateCode && offlineCandidateCode === code)) && (
+              <div className="p-3.5 bg-amber-500/10 border border-amber-500/30 rounded-2xl text-xs font-medium text-left leading-normal space-y-2.5 animate-fadeIn">
+                {errorMessage && (
+                  <div className="flex items-start gap-1.5 text-amber-950 font-medium leading-relaxed">
+                    <span className="shrink-0 font-bold text-amber-600">⚠️</span>
+                    <span>{errorMessage}</span>
+                  </div>
+                )}
+                {offlineCandidateCode && onJoinOfflineSubmit && (
+                  <button
+                    type="button"
+                    onClick={() => onJoinOfflineSubmit(offlineCandidateCode)}
+                    className="w-full py-2.5 bg-amber-500 hover:bg-amber-600 text-white font-extrabold text-xs tracking-wider uppercase rounded-xl shadow-md shadow-amber-500/20 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <Zap className="w-4 h-4 fill-white text-white" />
+                    <span>⚡ Join Offline ({offlineCandidateCode})</span>
+                  </button>
+                )}
               </div>
             )}
           </form>

@@ -94,6 +94,73 @@ export class RoomDO implements DurableObject {
       return Response.json({ success: true });
     }
 
+    // REST: Dynamic Synchronization of Offline Room with Cloudflare DO
+    if (path === "/internal-sync") {
+      const data: any = await request.json();
+      const cursor = this.db.exec("SELECT room_id, room_type, expires_at, state, salt, host_id, host_key FROM room LIMIT 1");
+      const rows = Array.from(cursor) as any[];
+
+      if (rows.length > 0) {
+        // Room already registered in DO
+        const roomRow = rows[0];
+        const hostKeyMatch = !roomRow.host_key || (data.hostKey && data.hostKey === roomRow.host_key);
+
+        if (hostKeyMatch && data.hostId) {
+          this.db.exec("UPDATE room SET host_id = ?, state = 'ACTIVE' WHERE room_id = ?", data.hostId, roomRow.room_id);
+        } else {
+          this.db.exec("UPDATE room SET state = 'ACTIVE' WHERE room_id = ?", roomRow.room_id);
+        }
+
+        // Restore expiration alarm if still in future
+        const targetAlarm = new Date(roomRow.expires_at).getTime();
+        if (targetAlarm > Date.now()) {
+          await this.state.storage.setAlarm(targetAlarm);
+        }
+
+        return Response.json({
+          success: true,
+          internalRoomId: roomRow.room_id,
+          expiresAt: roomRow.expires_at,
+          salt: roomRow.salt,
+          hostId: data.hostId || roomRow.host_id,
+        });
+      }
+
+      // Room record does not exist yet: provision it cleanly
+      const internalRoomId = crypto.randomUUID();
+      const expiresAt = data.expiresAt || new Date(Date.now() + 2 * 3600 * 1000).toISOString();
+      const salt =
+        data.salt ||
+        Array.from(crypto.getRandomValues(new Uint8Array(8)))
+          .map((b) => b.toString(16).padStart(2, "0"))
+          .join("");
+
+      this.db.exec(
+        `INSERT INTO room (room_id, public_code, room_type, visibility, created_at, expires_at, state, salt, host_id, host_key)
+         VALUES (?, ?, ?, 'private', ?, ?, 'ACTIVE', ?, ?, ?)`,
+        internalRoomId,
+        data.roomCode,
+        data.type || "meet",
+        Date.now(),
+        expiresAt,
+        salt,
+        data.hostId || null,
+        data.hostKey || null
+      );
+
+      // Set authoritative alarm for natural room expiration
+      const alarmTime = new Date(expiresAt).getTime();
+      await this.state.storage.setAlarm(alarmTime);
+
+      return Response.json({
+        success: true,
+        internalRoomId,
+        expiresAt,
+        salt,
+        hostId: data.hostId || null,
+      });
+    }
+
     // REST: Verify room eligibility before WebSocket connect
     if (path === "/internal-check-join") {
       const cursor = this.db.exec("SELECT room_id, room_type, expires_at, state, salt, host_id FROM room LIMIT 1");
@@ -180,26 +247,38 @@ export class RoomDO implements DurableObject {
         return new Response("Room not found or inactive", { status: 404 });
       }
 
+      // Restore authoritative expiration alarm if room is active (in case a 5-minute empty-room grace alarm was pending)
+      const expiryCursor = this.db.exec("SELECT expires_at FROM room LIMIT 1");
+      const expiryRows = Array.from(expiryCursor) as any[];
+      if (expiryRows.length > 0 && expiryRows[0].expires_at) {
+        const trueAlarmTime = new Date(expiryRows[0].expires_at).getTime();
+        if (trueAlarmTime > Date.now()) {
+          await this.state.storage.setAlarm(trueAlarmTime);
+        }
+      }
+
       let currentHostId = roomRows[0].host_id;
       const expectedHostKey = roomRows[0].host_key;
 
       // Creator Reclaim Check:
       const isHostKeyMatch = !!(providedHostKey && expectedHostKey && providedHostKey === expectedHostKey);
 
-      // Reclaim host role if creator provided valid hostKey, or if no host has been set yet
-      if (isHostKeyMatch || !currentHostId) {
+      // Reclaim host role if creator provided valid hostKey, or for non-meet rooms if no host set yet
+      if (isHostKeyMatch) {
         const previousHostId = currentHostId;
         currentHostId = sessionId;
         this.db.exec("UPDATE room SET host_id = ?", sessionId);
         if (previousHostId && previousHostId !== sessionId) {
-          this.db.exec("DELETE FROM participants WHERE participant_id = ?", previousHostId);
-          this.db.exec("DELETE FROM nuke_votes WHERE participant_id = ?", previousHostId);
+          this.broadcast({
+            type: "HOST_CHANGED",
+            senderId: "server",
+            timestamp: Date.now(),
+            payload: { hostId: sessionId },
+          });
         }
-      }
-
-      if (isHostKeyMatch) {
-        // Broadcaster is reclaiming: remove any stale record with same identity or past hostId
-        this.db.exec("DELETE FROM participants WHERE identity_name = ? AND participant_id != ?", identity, sessionId);
+      } else if (!currentHostId && roomRows[0].room_type !== "meet") {
+        currentHostId = sessionId;
+        this.db.exec("UPDATE room SET host_id = ?", sessionId);
       }
 
       // Check duplicate identity inside the room (case-insensitive deduplication)

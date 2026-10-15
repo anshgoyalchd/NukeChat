@@ -192,6 +192,7 @@ export default function App() {
     if (codeToJoin) {
       if (hostKeyParam) {
         try {
+          sessionStorage.setItem(`nukechat_is_creator_${codeToJoin}`, "true");
           localStorage.setItem(`nukechat_host_key_${codeToJoin}`, hostKeyParam);
         } catch (e) {}
       }
@@ -323,6 +324,7 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(params),
+        signal: AbortSignal.timeout(2500),
       });
 
       const data = await res.json();
@@ -338,6 +340,9 @@ export default function App() {
 
         if (data.hostKey) {
           localStorage.setItem(`nukechat_host_key_${data.roomCode}`, data.hostKey);
+          try {
+            sessionStorage.setItem(`nukechat_is_creator_${data.roomCode}`, "true");
+          } catch (e) {}
         }
 
         // Reuse cached identity or generate if empty
@@ -346,6 +351,27 @@ export default function App() {
         }
         setScreen("IDENTITY");
       } else {
+        if (params.type === "meet") {
+          // Cloud failed or offline: seamless offline meet creation
+          console.log("[App] Cloud create returned non-200 for meet, triggering offline fallback.");
+          const offlineCode = Math.floor(100000 + Math.random() * 900000).toString();
+          const offlineHostKey = safeRandomUUID();
+          setRoomCode(offlineCode);
+          setRoomType("meet");
+          setExpiresAt(new Date(Date.now() + 2 * 3600 * 1000).toISOString());
+          setSalt("offline-salt");
+          setHostId(sessionId);
+          localStorage.setItem(`nukechat_host_key_${offlineCode}`, offlineHostKey);
+          localStorage.setItem(`nukechat_offline_meet_${offlineCode}`, "true");
+          try {
+            sessionStorage.setItem(`nukechat_is_creator_${offlineCode}`, "true");
+          } catch (e) {}
+          if (!identityName || !identityName.trim()) {
+            handleGenerateIdentity();
+          }
+          setScreen("IDENTITY");
+          return;
+        }
         setErrorMessage(data.error || "Failed to create room. Please try again.");
       }
     } catch (err) {
@@ -361,6 +387,9 @@ export default function App() {
         setHostId(sessionId);
         localStorage.setItem(`nukechat_host_key_${offlineCode}`, offlineHostKey);
         localStorage.setItem(`nukechat_offline_meet_${offlineCode}`, "true");
+        try {
+          sessionStorage.setItem(`nukechat_is_creator_${offlineCode}`, "true");
+        } catch (e) {}
         if (!identityName || !identityName.trim()) {
           handleGenerateIdentity();
         }
@@ -373,25 +402,83 @@ export default function App() {
     }
   };
 
+  // State for offline join button candidate (shown after user clicks join)
+  const [offlineCandidateCode, setOfflineCandidateCode] = useState<string | null>(null);
+
+  // Direct Join Offline Room helper (0 KB internet / local Wi-Fi)
+  const handleJoinOfflineRoom = (code: string) => {
+    const cleanCode = code.trim().replace(/\D/g, "");
+    if (!cleanCode) return;
+    setErrorMessage(null);
+    setOfflineCandidateCode(null);
+    console.log("[App] Joining offline classroom directly for code:", cleanCode);
+    setRoomCode(cleanCode);
+    setRoomType("meet");
+    setExpiresAt(new Date(Date.now() + 2 * 3600 * 1000).toISOString());
+    setSalt("offline-salt");
+    localStorage.setItem(`nukechat_offline_meet_${cleanCode}`, "true");
+    const isExplicitCreator =
+      typeof sessionStorage !== "undefined" &&
+      sessionStorage.getItem(`nukechat_is_creator_${cleanCode}`) === "true";
+    const storedHostKey = isExplicitCreator
+      ? (typeof localStorage !== "undefined" && localStorage.getItem(`nukechat_host_key_${cleanCode}`)) || ""
+      : "";
+    if (storedHostKey) {
+      setHostId(sessionId);
+    } else {
+      setHostId("");
+    }
+    if (!identityName || !identityName.trim()) {
+      handleGenerateIdentity();
+    }
+    setScreen("IDENTITY");
+  };
+
   // 4. API Call: Join Room (Eligibility Check)
   const handleJoinRoom = async (code: string) => {
     setIsActionPending(true);
     setErrorMessage(null);
+    setOfflineCandidateCode(null);
 
-    const storedHostKey = (typeof localStorage !== "undefined" && localStorage.getItem(`nukechat_host_key_${code}`)) || "";
+    const cleanCode = code.trim().replace(/\D/g, "");
+    if (!cleanCode || cleanCode.length !== 6) {
+      setErrorMessage("Please enter a valid 6-digit room code.");
+      setIsActionPending(false);
+      return;
+    }
 
+    const isExplicitCreator =
+      typeof sessionStorage !== "undefined" &&
+      sessionStorage.getItem(`nukechat_is_creator_${cleanCode}`) === "true";
+    const storedHostKey = isExplicitCreator
+      ? (typeof localStorage !== "undefined" && localStorage.getItem(`nukechat_host_key_${cleanCode}`)) || ""
+      : "";
+
+    // 1. Check whether user is already offline
+    const isOnline = typeof navigator !== "undefined" ? navigator.onLine : true;
+    if (!isOnline) {
+      console.log("[App] User is currently offline. Presenting offline join option for code:", cleanCode);
+      setIsActionPending(false);
+      setErrorMessage("You are offline (no internet). Connect to this room directly over local Wi-Fi:");
+      setOfflineCandidateCode(cleanCode);
+      return;
+    }
+
+    // 2. User is online: check whether room exists online
     try {
       const res = await fetch(`${BACKEND_URL}/api/room/join`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          roomCode: code,
+          roomCode: cleanCode,
           hostKey: storedHostKey || undefined,
         }),
+        signal: AbortSignal.timeout(2500),
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (res.status === 200 && data.success) {
+        // Room exists online! Join normally
         setRoomCode(data.roomCode);
         setRoomType(data.type);
         setExpiresAt(data.expiresAt);
@@ -405,6 +492,8 @@ export default function App() {
           setHostId(sessionId);
         } else if (data.hostId) {
           setHostId(data.hostId);
+        } else {
+          setHostId("");
         }
 
         // Reuse cached identity or generate if empty
@@ -412,45 +501,20 @@ export default function App() {
           handleGenerateIdentity();
         }
         setScreen("IDENTITY");
-      } else if (res.status === 404 && code && code.trim().length === 6) {
-        // Hybrid offline / LAN fallback: If host created room offline and cloud hasn't received it yet,
-        // still enter Local Meet room so local / LAN / BroadcastChannel signaling connects immediately
-        console.log("[App] Room not on cloud, entering local LAN / offline mode for code:", code);
-        setRoomCode(code);
-        setRoomType("meet");
-        setExpiresAt(new Date(Date.now() + 2 * 3600 * 1000).toISOString());
-        setSalt("offline-salt");
-        if (storedHostKey) {
-          setHostId(sessionId);
-        }
-        if (!identityName || !identityName.trim()) {
-          handleGenerateIdentity();
-        }
-        setScreen("IDENTITY");
       } else {
-        setErrorMessage(data.error || "Failed to join room.");
-        if (code.toUpperCase() === activeRoomCode?.toUpperCase()) {
+        // Room does not exist online!
+        console.log("[App] Room does not exist online on server. Presenting offline join option for code:", cleanCode);
+        setErrorMessage("Room not found online. If this room is hosted on your local Wi-Fi, join offline:");
+        setOfflineCandidateCode(cleanCode);
+        if (cleanCode === activeRoomCode) {
           clearActiveSessionStorage();
         }
       }
     } catch (err) {
-      // Offline fallback: if network is offline or server unreachable, allow joining Local Meet via LAN
-      if (code && code.trim().length >= 4) {
-        console.log("[App] Offline room join initiated for code:", code);
-        setRoomCode(code);
-        setRoomType("meet");
-        setExpiresAt(new Date(Date.now() + 2 * 3600 * 1000).toISOString());
-        setSalt("offline-salt");
-        if (storedHostKey) {
-          setHostId(sessionId);
-        }
-        if (!identityName || !identityName.trim()) {
-          handleGenerateIdentity();
-        }
-        setScreen("IDENTITY");
-        return;
-      }
-      setErrorMessage("Network error checking room parameters.");
+      // Cloud server unreachable or offline Wi-Fi without WAN
+      console.log("[App] Server unreachable (likely offline Wi-Fi). Presenting offline join option for code:", cleanCode);
+      setErrorMessage("Cannot reach cloud server. If this room is hosted on your local Wi-Fi, join offline:");
+      setOfflineCandidateCode(cleanCode);
     } finally {
       setIsActionPending(false);
     }
@@ -570,10 +634,13 @@ export default function App() {
             <Home
               onCreateClick={() => {
                 setErrorMessage(null);
+                setOfflineCandidateCode(null);
                 setScreen("CREATE");
               }}
               onRandomClick={handleStartMatchmaking}
               onJoinSubmit={handleJoinRoom}
+              onJoinOfflineSubmit={handleJoinOfflineRoom}
+              offlineCandidateCode={offlineCandidateCode}
               activeRoomCode={activeRoomCode}
               onRejoinClick={handleRejoinSession}
               onLeaveSessionClick={handleLeaveRoom}
@@ -585,9 +652,30 @@ export default function App() {
           {/* 2. CREATE SCREEN */}
           {screen === "CREATE" && (
             <CreateRoom
-              onBackClick={() => setScreen("HOME")}
+              onBackClick={() => {
+                setErrorMessage(null);
+                setOfflineCandidateCode(null);
+                setScreen("HOME");
+              }}
               onCreateRoom={handleCreateRoom}
               isCreating={isActionPending}
+            />
+          )}
+
+          {/* 3. JOIN SCREEN */}
+          {screen === "JOIN" && (
+            <JoinRoom
+              onBackClick={() => {
+                setErrorMessage(null);
+                setOfflineCandidateCode(null);
+                setScreen("HOME");
+              }}
+              onJoinRoom={handleJoinRoom}
+              onJoinOfflineSubmit={handleJoinOfflineRoom}
+              offlineCandidateCode={offlineCandidateCode}
+              onRandomClick={handleStartMatchmaking}
+              isJoining={isActionPending}
+              errorMessage={errorMessage}
             />
           )}
 

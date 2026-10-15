@@ -1,5 +1,12 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { DEFAULT_ICE_SERVERS } from "../utils/ice";
+import {
+  createOfferQrString,
+  createAnswerQrString,
+  parsePairingQr,
+  getOptimalCameraDeviceId,
+  getAvailableBackCameras,
+} from "../utils/offlinePairing";
 
 export type BroadcastSource = "screen" | "camera" | null;
 export type StreamHealth = "idle" | "live" | "buffering" | "interrupted" | "ended";
@@ -14,6 +21,10 @@ interface UseLocalMeetProps {
   identityName?: string;
   avatarUrl?: string;
   onDirectChatMessage?: (msg: any) => void;
+  isConnected?: boolean;
+  isLocalDaemon?: boolean;
+  backendUrl?: string;
+  onWanRestored?: () => void;
 }
 
 export const useLocalMeet = ({
@@ -26,8 +37,16 @@ export const useLocalMeet = ({
   identityName = "User",
   avatarUrl,
   onDirectChatMessage,
+  isConnected = false,
+  isLocalDaemon = false,
+  backendUrl = import.meta.env.VITE_BACKEND_URL || "https://nuke-chat-backend.ansh-goyalchd.workers.dev",
+  onWanRestored,
 }: UseLocalMeetProps) => {
   const isHost = sessionId === hostId;
+  const onWanRestoredRef = useRef(onWanRestored);
+  useEffect(() => {
+    onWanRestoredRef.current = onWanRestored;
+  }, [onWanRestored]);
 
   // Local media for Host
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
@@ -45,6 +64,9 @@ export const useLocalMeet = ({
   const [relayViewersCount, setRelayViewersCount] = useState(0);
   const [connectionTopology, setConnectionTopology] = useState<"star_lan" | "relay" | null>(null);
   const [internetState, setInternetState] = useState<"online" | "offline">(
+    typeof navigator !== "undefined" && navigator.onLine ? "online" : "offline"
+  );
+  const internetStateRef = useRef<"online" | "offline">(
     typeof navigator !== "undefined" && navigator.onLine ? "online" : "offline"
   );
 
@@ -70,11 +92,40 @@ export const useLocalMeet = ({
   const micStreamRef = useRef<MediaStream | null>(null);
   const activeCameraStreamRef = useRef<MediaStream | null>(null);
   const activeScreenStreamRef = useRef<MediaStream | null>(null);
+  const audioMixerContextRef = useRef<AudioContext | null>(null);
   const reconnectTimerRef = useRef<any>(null);
   const retryStudentConnectionRef = useRef<() => void>(() => {});
 
   // Host maintains connection to each student
   const studentPeersRef = useRef<Record<string, RTCPeerConnection>>({});
+  const offlineOfferPeerRef = useRef<RTCPeerConnection | null>(null);
+
+  // Expose WebRTC debug telemetry for automated verification
+  if (typeof window !== "undefined") {
+    if (isHost) {
+      (window as any)._debugHostPcState = () => {
+        const peers = Object.entries(studentPeersRef.current).map(([id, pc]) => ({
+          id,
+          ice: pc.iceConnectionState,
+          conn: pc.connectionState,
+          sig: pc.signalingState,
+          senders: pc.getSenders().map((s) => s.track?.kind),
+        }));
+        return { isHost: true, peers };
+      };
+    } else {
+      (window as any)._debugJoineePcState = () => {
+        const pc = hostPeerRef.current;
+        return {
+          isHost: false,
+          ice: pc?.iceConnectionState,
+          conn: pc?.connectionState,
+          sig: pc?.signalingState,
+          receivers: pc?.getReceivers().map((r) => ({ kind: r.track?.kind, readyState: r.track?.readyState })),
+        };
+      };
+    }
+  }
 
   // LAN DataChannels and Discovered Participants for offline Wi-Fi mode
   const [lanParticipants, setLanParticipants] = useState<Array<{ id: string; identity: string; avatar: string }>>([]);
@@ -98,6 +149,36 @@ export const useLocalMeet = ({
   // ICE Candidate Queues to prevent dropped candidates during signaling
   const hostCandidatesQueueRef = useRef<RTCIceCandidateInit[]>([]);
   const studentCandidatesQueueRef = useRef<Record<string, RTCIceCandidateInit[]>>({});
+  const handleSignalRef = useRef<((senderId: string, signal: any) => Promise<void>) | null>(null);
+
+  // Universal Signal Sender: Sends via WebSocket AND direct LAN DataChannel (P2P offline fallback!)
+  const sendSignalToPeer = useCallback(
+    (targetId: string, signal: any) => {
+      // 1. Send via WebSocket
+      try {
+        sendMessage("SIGNAL", {
+          targetId,
+          signal,
+        });
+      } catch (e) {}
+
+      // 2. Also send over direct WebRTC DataChannel if open (enables offline signaling without internet!)
+      try {
+        if (isHost) {
+          const dc = studentDataChannelsRef.current[targetId];
+          if (dc && dc.readyState === "open") {
+            dc.send(JSON.stringify({ type: "SIGNAL", signal }));
+          }
+        } else {
+          const dc = hostDataChannelRef.current;
+          if (dc && dc.readyState === "open") {
+            dc.send(JSON.stringify({ type: "SIGNAL", signal }));
+          }
+        }
+      } catch (e) {}
+    },
+    [sendMessage, isHost]
+  );
 
   // Helper to reliably stop all tracks in a MediaStream so device lights (camera/mic) turn off
   const stopStreamTracks = (stream: MediaStream | null) => {
@@ -105,6 +186,9 @@ export const useLocalMeet = ({
     try {
       stream.getTracks().forEach((track) => {
         try {
+          track.onended = null;
+          track.onmute = null;
+          track.onunmute = null;
           track.stop();
           track.enabled = false;
         } catch (e) {}
@@ -121,9 +205,8 @@ export const useLocalMeet = ({
   const cleanStudentPeer = useCallback(
     (studentId: string, force = false) => {
       const isDirectLan = peerTopologyMap[studentId] === "star_lan";
-      // If this is a direct Star LAN peer and internet was lost, preserve it!
-      if (isDirectLan && typeof navigator !== "undefined" && !navigator.onLine && !force) {
-        console.log(`[LocalMeet] Preserving direct Star LAN peer ${studentId} while offline.`);
+      // If this is a direct Star LAN peer or pending offline peer, preserve it!
+      if ((studentId.startsWith("offline-peer-") || isDirectLan) && !force) {
         return;
       }
 
@@ -159,6 +242,7 @@ export const useLocalMeet = ({
 
     const currentParticipantIds = new Set(participants.map((p) => p.id));
     Object.keys(studentPeersRef.current).forEach((studentId) => {
+      if (studentId.startsWith("offline-peer-")) return;
       if (peerTopologyMap[studentId] === "star_lan") return;
       if (!currentParticipantIds.has(studentId)) {
         cleanStudentPeer(studentId);
@@ -211,6 +295,10 @@ export const useLocalMeet = ({
               }
             }
           });
+        } else if (msg.type === "SIGNAL" && msg.signal) {
+          if (handleSignalRef.current) {
+            handleSignalRef.current(studentId, msg.signal);
+          }
         }
       } catch (err) {}
     };
@@ -320,8 +408,10 @@ export const useLocalMeet = ({
       cleanStudentPeer(studentId);
     }
 
+    const isOffline = !isConnected || isLocalDaemon || (typeof navigator !== "undefined" && !navigator.onLine);
+    const effectiveIce = isOffline ? [] : (iceServersRef.current || iceServers);
     const pc = new RTCPeerConnection({
-      iceServers: iceServersRef.current || iceServers,
+      iceServers: effectiveIce,
       iceCandidatePoolSize: 2,
     });
     studentPeersRef.current[studentId] = pc;
@@ -334,42 +424,26 @@ export const useLocalMeet = ({
       setupHostDataChannel(studentId, dc);
     } catch (e) {}
 
-    // Attach active tracks if currently presenting
+    // Attach active tracks if currently presenting (always video first, then audio for m-line consistency)
     if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((track) => {
-        pc.addTrack(track, localStreamRef.current!);
-      });
+      const vTrack = localStreamRef.current.getVideoTracks()[0];
+      const aTrack = localStreamRef.current.getAudioTracks()[0];
+      if (vTrack) {
+        try { pc.addTrack(vTrack, localStreamRef.current); } catch (e) {}
+      }
+      if (aTrack) {
+        try { pc.addTrack(aTrack, localStreamRef.current); } catch (e) {}
+      }
     }
 
-    // Prioritize direct LAN connection (Star Topology) first over public internet
+    // Send ICE candidates immediately
     pc.onicecandidate = (event) => {
       if (event.candidate) {
-        const isHostCandidate = event.candidate.candidate.includes("typ host");
-        if (isHostCandidate) {
-          // Priority 1: Direct LAN Star Topology (no internet). Send IMMEDIATELY!
-          sendMessage("SIGNAL", {
-            targetId: studentId,
-            signal: {
-              type: "ice-candidate",
-              data: event.candidate,
-            },
-          });
-        } else {
-          // Non-host (srflx/relay): Delay by 1000ms to give priority to direct LAN host pairing.
-          // After 1000ms, always send so WAN/Cellular peers connect smoothly without hanging.
-          setTimeout(() => {
-            const currentPc = studentPeersRef.current[studentId];
-            if (currentPc && currentPc.signalingState !== "closed") {
-              sendMessage("SIGNAL", {
-                targetId: studentId,
-                signal: {
-                  type: "ice-candidate",
-                  data: event.candidate,
-                },
-              });
-            }
-          }, 1000);
-        }
+        console.log(`[LocalMeet] Host generated ICE candidate for ${studentId}:`, event.candidate.candidate);
+        sendSignalToPeer(studentId, {
+          type: "ice-candidate",
+          data: event.candidate,
+        });
       }
     };
 
@@ -428,6 +502,10 @@ export const useLocalMeet = ({
           if (onDirectChatMessageRef.current) {
             onDirectChatMessageRef.current(msg);
           }
+        } else if (msg.type === "SIGNAL" && msg.signal) {
+          if (handleSignalRef.current) {
+            handleSignalRef.current(hostId, msg.signal);
+          }
         }
       } catch (err) {}
     };
@@ -443,8 +521,10 @@ export const useLocalMeet = ({
       hostPeerRef.current.close();
     }
 
+    const isOffline = !isConnected || isLocalDaemon || (typeof navigator !== "undefined" && !navigator.onLine);
+    const effectiveIce = isOffline ? [] : (iceServersRef.current || iceServers);
     const pc = new RTCPeerConnection({
-      iceServers: iceServersRef.current || iceServers,
+      iceServers: effectiveIce,
       iceCandidatePoolSize: 2,
     });
     hostPeerRef.current = pc;
@@ -455,38 +535,14 @@ export const useLocalMeet = ({
       setupStudentDataChannel(event.channel);
     };
 
-    // Pre-allocate receive transceivers for audio and video
-    try {
-      pc.addTransceiver("video", { direction: "recvonly" });
-      pc.addTransceiver("audio", { direction: "recvonly" });
-    } catch (e) {}
-
+    // Send ICE candidates immediately
     pc.onicecandidate = (event) => {
       if (event.candidate && hostId) {
-        const isHostCandidate = event.candidate.candidate.includes("typ host");
-        if (isHostCandidate) {
-          // Priority 1: Direct LAN Star Topology (no internet). Send IMMEDIATELY!
-          sendMessage("SIGNAL", {
-            targetId: hostId,
-            signal: {
-              type: "ice-candidate",
-              data: event.candidate,
-            },
-          });
-        } else {
-          // Non-host candidate: delay by 1000ms to allow direct local connection first!
-          setTimeout(() => {
-            if (hostPeerRef.current && hostPeerRef.current.signalingState !== "closed") {
-              sendMessage("SIGNAL", {
-                targetId: hostId,
-                signal: {
-                  type: "ice-candidate",
-                  data: event.candidate,
-                },
-              });
-            }
-          }, 1000);
-        }
+        console.log(`[LocalMeet] Student generated ICE candidate for host:`, event.candidate.candidate);
+        sendSignalToPeer(hostId, {
+          type: "ice-candidate",
+          data: event.candidate,
+        });
       }
     };
 
@@ -506,16 +562,16 @@ export const useLocalMeet = ({
         if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = setTimeout(() => {
           retryStudentConnectionRef.current();
-        }, 1000);
+        }, 1500);
       } else if (state === "disconnected") {
-        console.warn("[LocalMeet] ICE connection temporarily disconnected, waiting 1000ms before retry...");
+        console.warn("[LocalMeet] ICE connection temporarily disconnected, waiting 6000ms before retry...");
         setStreamHealth("buffering");
         if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = setTimeout(() => {
           if (hostPeerRef.current?.iceConnectionState === "disconnected" || hostPeerRef.current?.iceConnectionState === "failed") {
             retryStudentConnectionRef.current();
           }
-        }, 1000);
+        }, 6000);
       }
     };
 
@@ -531,43 +587,44 @@ export const useLocalMeet = ({
 
     pc.ontrack = (event) => {
       console.log("[LocalMeet] Student received remote track:", event.track.kind, event.track.id);
-      let stream = (event.streams && event.streams[0]) || null;
-      if (!stream) {
-        stream = new MediaStream([event.track]);
-      }
+      
       setRemoteStream((prev) => {
-        if (!prev) return stream;
-        const exists = prev.getTracks().some((t) => t.id === event.track.id);
-        if (!exists) {
-          prev.addTrack(event.track);
+        const newStream = new MediaStream();
+        if (prev) {
+          prev.getTracks().forEach((t) => {
+            if (t.kind !== event.track.kind) {
+              newStream.addTrack(t);
+            } else if (t.id !== event.track.id) {
+              try { t.stop(); } catch (e) {}
+            }
+          });
         }
-        return new MediaStream(prev.getTracks());
+        newStream.addTrack(event.track);
+        return newStream;
       });
-      setIsHostPresenting(true);
 
-      let muteTimeout: any = null;
+      setIsHostPresenting(true);
+      setStreamHealth("live");
 
       event.track.onmute = () => {
-        console.warn("[LocalMeet] Remote track muted, scheduling recovery timer...");
-        setStreamHealth("buffering");
-        if (muteTimeout) clearTimeout(muteTimeout);
-        // If track stays muted for >4 seconds on cellular / WAN, request fresh connection
-        muteTimeout = setTimeout(() => {
-          if (event.track.muted && !isHost) {
-            console.warn("[LocalMeet] Track muted for >4s on WAN, requesting ICE reconnect...");
-            retryStudentConnectionRef.current();
-          }
-        }, 4000);
+        console.log("[LocalMeet] Remote track muted (idle screen or paused frames)");
       };
 
       event.track.onunmute = () => {
-        if (muteTimeout) clearTimeout(muteTimeout);
-        console.log("[LocalMeet] Remote track resumed");
+        console.log("[LocalMeet] Remote track active");
+        setIsHostPresenting(true);
         setStreamHealth("live");
+        setRemoteStream((prev) => {
+          if (!prev || !prev.getTracks().some((t) => t.id === event.track.id)) {
+            const s = prev ? new MediaStream(prev.getTracks()) : new MediaStream();
+            s.addTrack(event.track);
+            return s;
+          }
+          return prev;
+        });
       };
 
       event.track.onended = () => {
-        if (muteTimeout) clearTimeout(muteTimeout);
         console.warn("[LocalMeet] Remote track ended by host");
         setStreamHealth("ended");
         setIsHostPresenting(false);
@@ -628,36 +685,67 @@ export const useLocalMeet = ({
         });
       }
 
-      const offer = await pc.createOffer({ iceRestart });
-      await pc.setLocalDescription(offer);
+      // Ensure active local presentation tracks are attached in consistent m-line order (video then audio)
+      if (localStreamRef.current) {
+        const transceivers = "getTransceivers" in pc ? pc.getTransceivers() : [];
+        const senders = pc.getSenders();
+        const sortedTracks = [...localStreamRef.current.getTracks()].sort((a, b) =>
+          a.kind === "video" ? -1 : b.kind === "video" ? 1 : 0
+        );
+        sortedTracks.forEach((track) => {
+          const transceiver = transceivers.find(
+            (t) =>
+              t.receiver?.track?.kind === track.kind ||
+              (t.sender.track && t.sender.track.kind === track.kind)
+          );
+          const existingSender = transceiver
+            ? transceiver.sender
+            : senders.find((s) => (s.track && s.track.kind === track.kind) || (s as any).kind === track.kind);
 
-      sendMessage("SIGNAL", {
-        targetId: studentId,
-        signal: {
-          type: "sdp-offer",
-          data: offer,
-        },
+          if (existingSender) {
+            existingSender.replaceTrack(track).catch(() => {});
+          } else {
+            try {
+              pc.addTrack(track, localStreamRef.current!);
+            } catch (e) {}
+          }
+        });
+      }
+
+      const offer = await pc.createOffer({ iceRestart });
+      let sdp = offer.sdp || "";
+      if (sdp.includes("a=rtpmap:111 opus/48000/2") && !sdp.includes("stereo=1")) {
+        sdp = sdp.replace(
+          "a=rtpmap:111 opus/48000/2",
+          "a=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1;maxaveragebitrate=128000"
+        );
+      }
+      const finalOffer = { type: offer.type, sdp };
+      await pc.setLocalDescription(finalOffer);
+
+      sendSignalToPeer(studentId, {
+        type: "sdp-offer",
+        data: finalOffer,
       });
     } catch (err) {
       console.error(`[LocalMeet] Error creating offer for student ${studentId}:`, err);
     }
-  }, [sendMessage]);
+  }, [sendSignalToPeer]);
 
   // Public: Retry Connection (for students if connection was interrupted)
   const retryStudentConnection = useCallback(() => {
     if (isHost) return;
     console.log("[LocalMeet] Attempting to reconnect to host:", hostId);
     setStreamHealth("buffering");
+    setRemoteStream(null);
+    setIsHostPresenting(false);
     if (hostId) {
       createStudentToHostConnection();
-      sendMessage("SIGNAL", {
-        targetId: hostId,
-        signal: {
-          type: "reconnect-request",
-        },
+      sendSignalToPeer(hostId, {
+        type: "reconnect-request",
       });
     }
-  }, [isHost, hostId, createStudentToHostConnection, sendMessage]);
+  }, [isHost, hostId, createStudentToHostConnection, sendSignalToPeer]);
 
   useEffect(() => {
     retryStudentConnectionRef.current = retryStudentConnection;
@@ -665,84 +753,147 @@ export const useLocalMeet = ({
 
   // Sync offline room to Cloudflare DO when online
   const syncOfflineRoomToCloud = useCallback(async () => {
-    const isOfflineCreated = typeof localStorage !== "undefined" && localStorage.getItem(`nukechat_offline_meet_${roomCode}`) === "true";
+    const isOfflineCreated =
+      typeof localStorage !== "undefined" &&
+      localStorage.getItem(`nukechat_offline_meet_${roomCode}`) === "true";
     if (isOfflineCreated && isHost) {
       try {
-        const backendUrl = import.meta.env.VITE_BACKEND_URL || "https://nuke-chat-backend.ansh-goyalchd.workers.dev";
-        const hostKey = localStorage.getItem(`nukechat_host_key_${roomCode}`);
-        const res = await fetch(`${backendUrl}/api/room/create`, {
+        const hostKey =
+          typeof localStorage !== "undefined"
+            ? localStorage.getItem(`nukechat_host_key_${roomCode}`)
+            : null;
+        console.log(`[LocalMeet] Synchronizing offline room ${roomCode} with Cloudflare DO...`);
+        const res = await fetch(`${backendUrl}/api/room/sync`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            publicCode: roomCode,
+            roomCode,
             hostKey,
+            hostId: sessionId,
             type: "meet",
-            visibility: "private",
-            expiresInMinutes: 120,
+            expiresAt: Date.now() + 2 * 3600 * 1000,
           }),
         });
-        const data = await res.json();
-        if (data.success) {
-          console.log("[LocalMeet] Successfully registered offline room with Cloudflare DO!");
+        const data = await res.json().catch(() => ({}));
+        if (data && data.success) {
+          console.log(`[LocalMeet] Successfully registered/synchronized offline room ${roomCode} with Cloudflare DO!`);
           localStorage.removeItem(`nukechat_offline_meet_${roomCode}`);
+        } else {
+          console.warn("[LocalMeet] Cloudflare DO sync response:", data);
         }
       } catch (e) {
         console.warn("[LocalMeet] Auto-registration of offline room deferred:", e);
       }
     }
-  }, [isHost, roomCode]);
+  }, [isHost, roomCode, sessionId, backendUrl]);
 
-  // Attempt sync on mount if online
-  useEffect(() => {
-    if (typeof navigator !== "undefined" && navigator.onLine) {
-      syncOfflineRoomToCloud();
+  // Unified WAN Restored handler (called by active probe or window event)
+  const handleWanRestored = useCallback(async () => {
+    console.log("[LocalMeet] Internet/WAN restored! Reconnecting cloud signaling & remote peers...");
+    internetStateRef.current = "online";
+    setInternetState("online");
+
+    // 1. If room was started offline, silently publish it to Cloudflare DO so global peers can join
+    await syncOfflineRoomToCloud();
+
+    // 2. Trigger WebSocket reconnection to cloud
+    if (onWanRestoredRef.current) {
+      try {
+        onWanRestoredRef.current();
+      } catch (e) {
+        console.warn("[LocalMeet] Error invoking onWanRestored:", e);
+      }
     }
-  }, [syncOfflineRoomToCloud]);
 
-  // Listen for browser online/offline events to manage hybrid transitions and ICE restart
-  useEffect(() => {
-    const handleOnline = async () => {
-      console.log("[LocalMeet] Internet restored! Reconnecting cloud signaling & remote peers...");
-      setInternetState("online");
-
-      // 1. If room was started offline, silently publish it to Cloudflare DO so global peers can join
-      await syncOfflineRoomToCloud();
-
-      // 2. Host: Restart ICE for any remote peers that stalled while WAN was down
-      if (isHost && localStreamRef.current) {
-        for (const studentId of Object.keys(studentPeersRef.current)) {
-          // Direct Star LAN peers are already fine on local LAN; only remote relay peers need iceRestart
-          if (peerTopologyMap[studentId] !== "star_lan") {
-            const pc = studentPeersRef.current[studentId];
-            if (pc && pc.signalingState !== "closed") {
-              console.log(`[LocalMeet] Triggering ICE restart for remote student ${studentId}`);
-              await sendOfferToStudent(studentId, pc, true /* iceRestart */);
-            }
+    // 3. Host: Restart ICE for any remote peers that stalled while WAN was down (keep star_lan peers uninterrupted!)
+    if (isHost && localStreamRef.current) {
+      for (const studentId of Object.keys(studentPeersRef.current)) {
+        // Direct Star LAN peers are already fine on local LAN; only remote relay peers need iceRestart
+        if (peerTopologyMap[studentId] !== "star_lan") {
+          const pc = studentPeersRef.current[studentId];
+          if (pc && pc.signalingState !== "closed") {
+            console.log(`[LocalMeet] Triggering ICE restart for remote student ${studentId}`);
+            await sendOfferToStudent(studentId, pc, true /* iceRestart */);
           }
         }
       }
+    }
 
-      // 3. Student: If remote, retry connection to host
-      if (!isHost && hostPeerRef.current) {
-        retryStudentConnectionRef.current();
+    // 4. Student: If remote, retry connection to host
+    if (!isHost && hostPeerRef.current && connectionTopology !== "star_lan") {
+      retryStudentConnectionRef.current();
+    }
+  }, [isHost, syncOfflineRoomToCloud, peerTopologyMap, connectionTopology, sendOfferToStudent]);
+
+  // Unified WAN Lost handler (called by active probe or window event)
+  const handleWanLost = useCallback(() => {
+    console.log("[LocalMeet] Internet/WAN disconnected. Star LAN peers remain active without interruption.");
+    internetStateRef.current = "offline";
+    setInternetState("offline");
+    if (!isHost && connectionTopology !== "star_lan") {
+      setStreamHealth("interrupted");
+    }
+  }, [isHost, connectionTopology]);
+
+  // Active WAN probe & browser event listeners
+  useEffect(() => {
+    let isMounted = true;
+    let consecutiveFailures = 0;
+
+    const checkWan = async () => {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 2000);
+        const res = await fetch(`${backendUrl}/api/ping?t=${Date.now()}`, {
+          method: "GET",
+          signal: controller.signal,
+          cache: "no-store",
+        });
+        clearTimeout(timeoutId);
+
+        if (!isMounted) return;
+
+        if (res.ok) {
+          consecutiveFailures = 0;
+          if (internetStateRef.current !== "online") {
+            console.log("[LocalMeet] Active WAN probe: internet available!");
+            handleWanRestored();
+          }
+        } else {
+          throw new Error(`HTTP ${res.status}`);
+        }
+      } catch (err) {
+        if (!isMounted) return;
+        consecutiveFailures++;
+        if (consecutiveFailures >= 2 && internetStateRef.current !== "offline") {
+          console.log("[LocalMeet] Active WAN probe: internet disconnected. Star LAN preserved.");
+          handleWanLost();
+        }
       }
     };
 
-    const handleOffline = () => {
-      console.log("[LocalMeet] Internet disconnected. Star LAN peers remain active.");
-      setInternetState("offline");
-      if (!isHost && connectionTopology !== "star_lan") {
-        setStreamHealth("interrupted");
-      }
+    const intervalId = setInterval(checkWan, 3500);
+
+    const onWindowOnline = () => {
+      checkWan();
+    };
+    const onWindowOffline = () => {
+      handleWanLost();
     };
 
-    window.addEventListener("online", handleOnline);
-    window.addEventListener("offline", handleOffline);
+    window.addEventListener("online", onWindowOnline);
+    window.addEventListener("offline", onWindowOffline);
+
+    // Initial check on mount
+    checkWan();
+
     return () => {
-      window.removeEventListener("online", handleOnline);
-      window.removeEventListener("offline", handleOffline);
+      isMounted = false;
+      clearInterval(intervalId);
+      window.removeEventListener("online", onWindowOnline);
+      window.removeEventListener("offline", onWindowOffline);
     };
-  }, [isHost, roomCode, peerTopologyMap, connectionTopology, sendOfferToStudent]);
+  }, [backendUrl, handleWanRestored, handleWanLost]);
 
   // Handle incoming signaling messages with candidate queueing
   const handleSignal = useCallback(async (senderId: string, signal: any) => {
@@ -751,9 +902,11 @@ export const useLocalMeet = ({
     if (isHost) {
       // HOST receives signals from students
       if (type === "reconnect-request") {
-        console.log(`[LocalMeet] Student ${senderId} requested reconnection with iceRestart`);
+        console.log(`[LocalMeet] Student ${senderId} requested reconnection`);
         let pc = studentPeersRef.current[senderId];
-        if (!pc || pc.signalingState === "closed") {
+        // If student explicitly requested reconnection, their connection was likely reset/recreated.
+        // If our current PC is closed, failed, or stuck in non-stable signaling, recreate it cleanly:
+        if (!pc || pc.signalingState !== "stable" || pc.iceConnectionState === "failed" || pc.iceConnectionState === "closed") {
           pc = createHostToStudentConnection(senderId);
         }
         await sendOfferToStudent(senderId, pc, true);
@@ -765,6 +918,10 @@ export const useLocalMeet = ({
 
       if (type === "sdp-answer") {
         try {
+          if (pc.signalingState !== "have-local-offer") {
+            console.log(`[LocalMeet] Skipping stale sdp-answer from ${senderId} (state is ${pc.signalingState})`);
+            return;
+          }
           await pc.setRemoteDescription(new RTCSessionDescription(data));
           // Drain queued ICE candidates for this student, prioritizing direct LAN host candidates first
           const queue = studentCandidatesQueueRef.current[senderId] || [];
@@ -779,8 +936,12 @@ export const useLocalMeet = ({
               }
             }
           }
-        } catch (e) {
-          console.error(`[LocalMeet] Error setting remote description on host for student ${senderId}:`, e);
+        } catch (e: any) {
+          if (e?.message?.includes("m-lines")) {
+            console.warn(`[LocalMeet] Student ${senderId} sent answer for superseded offer; awaiting current answer.`);
+          } else {
+            console.error(`[LocalMeet] Error setting remote description on host for student ${senderId}:`, e);
+          }
         }
       } else if (type === "ice-candidate") {
         if (!pc || !pc.remoteDescription || !pc.remoteDescription.type) {
@@ -810,6 +971,41 @@ export const useLocalMeet = ({
         return;
       }
 
+      if (type === "broadcast-started") {
+        console.log("[LocalMeet] Host broadcast started/resumed signal received.");
+        setIsHostPresenting(true);
+        setStreamHealth("live");
+
+        // Check if existing peer connection has active receiver tracks
+        const pc = hostPeerRef.current;
+        if (pc) {
+          const liveTracks = pc.getReceivers()
+            .map((r) => r.track)
+            .filter((t): t is MediaStreamTrack => Boolean(t && t.readyState !== "ended"));
+          const hasVideoTrack = liveTracks.some((t) => t.kind === "video");
+          if (hasVideoTrack) {
+            console.log(`[LocalMeet] Auto-restored remoteStream with ${liveTracks.length} live tracks from existing connection`);
+            setRemoteStream(new MediaStream(liveTracks));
+            return;
+          }
+        }
+
+        // Wait a grace period (1200ms) for in-flight sdp-offer from host's pushTracksToAllStudents
+        // before requesting a renegotiation/reconnection
+        if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = setTimeout(() => {
+          const currentPc = hostPeerRef.current;
+          const currentLiveTracks = currentPc?.getReceivers()
+            .map((r) => r.track)
+            .filter((t): t is MediaStreamTrack => Boolean(t && t.readyState !== "ended")) || [];
+          if (!currentLiveTracks.some((t) => t.kind === "video")) {
+            console.log("[LocalMeet] No live video track arrived after grace period. Auto-requesting host broadcast stream...");
+            retryStudentConnectionRef.current();
+          }
+        }, 1200);
+        return;
+      }
+
       let pc = hostPeerRef.current;
       if (!pc) {
         pc = createStudentToHostConnection();
@@ -835,13 +1031,29 @@ export const useLocalMeet = ({
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
 
-          sendMessage("SIGNAL", {
-            targetId: senderId,
-            signal: {
-              type: "sdp-answer",
-              data: answer,
-            },
+          sendSignalToPeer(senderId, {
+            type: "sdp-answer",
+            data: answer,
           });
+
+          // Check if pc already has live receiver tracks (in case ontrack didn't fire due to existing transceiver)
+          const liveTracks = pc.getReceivers()
+            .map((r) => r.track)
+            .filter((t): t is MediaStreamTrack => Boolean(t && t.readyState === "live"));
+          if (liveTracks.length > 0) {
+            console.log(`[LocalMeet] Attached ${liveTracks.length} live tracks after sdp-offer`);
+            setRemoteStream((prev) => {
+              const stream = prev || new MediaStream();
+              liveTracks.forEach((t) => {
+                if (!stream.getTracks().some((existing) => existing.id === t.id)) {
+                  stream.addTrack(t);
+                }
+              });
+              return stream;
+            });
+            setIsHostPresenting(true);
+            setStreamHealth("live");
+          }
         } catch (e) {
           console.error("[LocalMeet] Error handling sdp-offer on student:", e);
         }
@@ -861,7 +1073,11 @@ export const useLocalMeet = ({
         }
       }
     }
-  }, [isHost, createHostToStudentConnection, createStudentToHostConnection, sendOfferToStudent, sendMessage]);
+  }, [isHost, createHostToStudentConnection, createStudentToHostConnection, sendOfferToStudent, sendSignalToPeer]);
+
+  useEffect(() => {
+    handleSignalRef.current = handleSignal;
+  }, [handleSignal]);
 
   // Seamless track transmission to all connected students
   const pushTracksToAllStudents = useCallback((stream: MediaStream | null) => {
@@ -873,12 +1089,24 @@ export const useLocalMeet = ({
       if (!pc || pc.signalingState === "closed") return;
 
       const senders = pc.getSenders();
-      const videoSender = senders.find(
-        (s) => (s.track && s.track.kind === "video") || (!s.track && (s as any).kind === "video")
+      const transceivers = "getTransceivers" in pc ? pc.getTransceivers() : [];
+      const videoTransceiver = transceivers.find(
+        (t) =>
+          t.receiver?.track?.kind === "video" ||
+          (t.sender.track && t.sender.track.kind === "video")
       );
-      const audioSender = senders.find(
-        (s) => (s.track && s.track.kind === "audio") || (!s.track && (s as any).kind === "audio")
+      const audioTransceiver = transceivers.find(
+        (t) =>
+          t.receiver?.track?.kind === "audio" ||
+          (t.sender.track && t.sender.track.kind === "audio")
       );
+
+      const videoSender = videoTransceiver
+        ? videoTransceiver.sender
+        : senders.find((s) => (s.track && s.track.kind === "video") || (s as any).kind === "video");
+      const audioSender = audioTransceiver
+        ? audioTransceiver.sender
+        : senders.find((s) => (s.track && s.track.kind === "audio") || (s as any).kind === "audio");
 
       let needsRenegotiation = false;
 
@@ -956,35 +1184,111 @@ export const useLocalMeet = ({
     }
 
     try {
-      const screen = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          frameRate: { max: qualityMode === "clarity" ? 10 : 20, ideal: qualityMode === "clarity" ? 10 : 20 },
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-        },
-        audio: true,
-      });
+      let screen: MediaStream;
+      try {
+        screen = await navigator.mediaDevices.getDisplayMedia({
+          video: {
+            frameRate: { max: qualityMode === "clarity" ? 10 : 20, ideal: qualityMode === "clarity" ? 10 : 20 },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+          },
+          audio: {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+          },
+        });
+      } catch (audioConstraintErr) {
+        // Fallback for browsers that only accept boolean audio: true
+        screen = await navigator.mediaDevices.getDisplayMedia({
+          video: {
+            frameRate: { max: qualityMode === "clarity" ? 10 : 20, ideal: qualityMode === "clarity" ? 10 : 20 },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+          },
+          audio: true,
+        });
+      }
 
       activeScreenStreamRef.current = screen;
       const tracks: MediaStreamTrack[] = [...screen.getVideoTracks()];
 
-      // Initialize microphone track directly into the stream
-      try {
-        const mic = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          },
-        });
-        micStreamRef.current = mic;
-        const audioTrack = mic.getAudioTracks()[0];
-        audioTrack.enabled = includeMic;
-        setIsMicActive(includeMic);
-        tracks.push(audioTrack);
-      } catch (micErr) {
-        console.warn("[LocalMeet] Mic unavailable, proceeding with screen only.", micErr);
+      const screenAudioTracks = screen.getAudioTracks();
+      const hasScreenAudio = screenAudioTracks.length > 0;
+
+      // Close any previous audio mixer context
+      if (audioMixerContextRef.current) {
+        try {
+          audioMixerContextRef.current.close();
+        } catch (e) {}
+        audioMixerContextRef.current = null;
+      }
+
+      let micStream: MediaStream | null = null;
+      if (includeMic) {
+        try {
+          micStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+            },
+          });
+          micStreamRef.current = micStream;
+          setIsMicActive(true);
+        } catch (micErr) {
+          console.warn("[LocalMeet] Mic unavailable, proceeding without mic:", micErr);
+          setIsMicActive(false);
+        }
+      } else {
         setIsMicActive(false);
+      }
+
+      let audioTrackToAdd: MediaStreamTrack | null = null;
+
+      if (hasScreenAudio && micStream && micStream.getAudioTracks().length > 0) {
+        // Both screen/video audio AND microphone are active -> mix with Web Audio API
+        try {
+          const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+          const audioCtx = new AudioContextClass({ sampleRate: 48000 });
+          audioMixerContextRef.current = audioCtx;
+
+          if (audioCtx.state === "suspended") {
+            try {
+              await audioCtx.resume();
+            } catch (e) {}
+          }
+
+          const dest = audioCtx.createMediaStreamDestination();
+          const screenSource = audioCtx.createMediaStreamSource(new MediaStream([screenAudioTracks[0]]));
+          screenSource.connect(dest);
+
+          const micSource = audioCtx.createMediaStreamSource(micStream);
+          micSource.connect(dest);
+
+          if (audioCtx.state === "running") {
+            audioTrackToAdd = dest.stream.getAudioTracks()[0];
+            console.log("[LocalMeet] Successfully mixed screen audio and microphone via WebAudio API");
+          } else {
+            console.warn("[LocalMeet] AudioContext suspended, falling back to direct screen audio track");
+            audioTrackToAdd = screenAudioTracks[0];
+          }
+        } catch (mixErr) {
+          console.warn("[LocalMeet] WebAudio mixing failed, using direct screen audio track:", mixErr);
+          audioTrackToAdd = screenAudioTracks[0];
+        }
+      } else if (hasScreenAudio) {
+        // Pure digital screen/tab audio (e.g. YouTube / video file playback)
+        console.log("[LocalMeet] Using pristine digital screen audio track (zero WebAudio degradation)");
+        audioTrackToAdd = screenAudioTracks[0];
+      } else if (micStream && micStream.getAudioTracks().length > 0) {
+        // Microphone audio only
+        console.log("[LocalMeet] Using microphone audio track");
+        audioTrackToAdd = micStream.getAudioTracks()[0];
+      }
+
+      if (audioTrackToAdd) {
+        tracks.push(audioTrackToAdd);
       }
 
       const combinedStream = new MediaStream(tracks);
@@ -1001,6 +1305,19 @@ export const useLocalMeet = ({
       setIsHostPresenting(true);
 
       pushTracksToAllStudents(combinedStream);
+
+      // Notify all students that broadcast has started/resumed so joinees auto-receive stream
+      const allStudentIds = new Set([
+        ...Object.keys(studentPeersRef.current),
+        ...participants.filter((p) => p.id !== sessionId).map((p) => p.id),
+        ...Object.keys(lanParticipantsRef.current).filter((id) => id !== sessionId),
+      ]);
+      allStudentIds.forEach((studentId) => {
+        sendSignalToPeer(studentId, {
+          type: "broadcast-started",
+          data: { source: "screen" },
+        });
+      });
     } catch (err: any) {
       if (err.name === "NotAllowedError") {
         return;
@@ -1013,6 +1330,56 @@ export const useLocalMeet = ({
         setBroadcastError(`Failed to start screen share: ${err.message || "Unknown error"}`);
       }
     }
+  };
+
+  // Helper to reliably acquire camera stream across mobile devices (Android Chrome, iOS Safari, desktop)
+  const getCameraStream = async (facing: "environment" | "user"): Promise<MediaStream> => {
+    const isUser = facing === "user";
+    const optimalDeviceId = !isUser ? await getOptimalCameraDeviceId("environment") : undefined;
+
+    // 1. Primary: ideal facingMode with optional optimal back camera sensor
+    try {
+      const constraints: MediaStreamConstraints = {
+        video: {
+          facingMode: { ideal: facing },
+          ...(optimalDeviceId ? { deviceId: { ideal: optimalDeviceId } } : {}),
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          frameRate: { max: 20, ideal: 15 },
+        },
+        audio: false,
+      };
+      return await navigator.mediaDevices.getUserMedia(constraints);
+    } catch (err1) {
+      console.warn(`[LocalMeet] Primary camera constraints failed for ${facing}:`, err1);
+    }
+
+    // 2. Direct facingMode constraint (standard mobile OS camera routing)
+    try {
+      return await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: facing,
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+        audio: false,
+      });
+    } catch (err2) {
+      console.warn(`[LocalMeet] Direct facingMode failed for ${facing}:`, err2);
+    }
+
+    // 3. Exact facingMode
+    try {
+      return await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { exact: facing } },
+        audio: false,
+      });
+    } catch (err3) {
+      console.warn(`[LocalMeet] Exact facingMode failed for ${facing}:`, err3);
+    }
+
+    // 4. Fallback to any available video sensor
+    return await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
   };
 
   // HOST: Start Camera Broadcast (properly cleans up any previous screen stream first!)
@@ -1032,60 +1399,202 @@ export const useLocalMeet = ({
     localStreamRef.current = null;
 
     try {
-      const constraints: MediaStreamConstraints = {
-        video: {
-          facingMode: { ideal: facingMode },
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          frameRate: { max: 20, ideal: 15 },
-        },
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      };
-
-      const cameraStream = await navigator.mediaDevices.getUserMedia(constraints);
+      const cameraStream = await getCameraStream(facingMode);
       activeCameraStreamRef.current = cameraStream;
+
+      // Lock optical zoom to 1.0x if available (prevent defaulting to 0.5x ultra-wide sensor)
+      const track = cameraStream.getVideoTracks()[0];
+      if (track && (track as any).getCapabilities) {
+        try {
+          const caps = (track as any).getCapabilities();
+          if (caps.zoom && typeof (track as any).applyConstraints === "function") {
+            const minZoom = typeof caps.zoom.min === "number" ? caps.zoom.min : 1.0;
+            await (track as any).applyConstraints({
+              advanced: [{ zoom: Math.max(1.0, minZoom) }],
+            });
+          }
+        } catch (e) {}
+      }
 
       // Handle track stop
       cameraStream.getVideoTracks()[0].onended = () => {
         stopBroadcast();
       };
 
-      // Set audio enabled status without removing track
-      if (cameraStream.getAudioTracks().length > 0) {
-        const audioTrack = cameraStream.getAudioTracks()[0];
-        audioTrack.enabled = includeMic;
-        setIsMicActive(includeMic);
-        micStreamRef.current = new MediaStream([audioTrack]);
+      let micStream: MediaStream | null = null;
+      if (includeMic) {
+        try {
+          micStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+            },
+          });
+          micStreamRef.current = micStream;
+          setIsMicActive(true);
+        } catch (micErr) {
+          console.warn("[LocalMeet] Mic unavailable, proceeding with camera only:", micErr);
+          setIsMicActive(false);
+        }
       } else {
         setIsMicActive(false);
       }
 
-      setLocalStream(cameraStream);
-      localStreamRef.current = cameraStream;
+      const tracks: MediaStreamTrack[] = [...cameraStream.getVideoTracks()];
+      if (micStream && micStream.getAudioTracks().length > 0) {
+        tracks.push(micStream.getAudioTracks()[0]);
+      }
+
+      const combinedStream = new MediaStream(tracks);
+
+      setLocalStream(combinedStream);
+      localStreamRef.current = combinedStream;
       setIsScreenSharing(true);
       setBroadcastSource("camera");
       setCameraFacingMode(facingMode);
       setIsHostPresenting(true);
 
-      pushTracksToAllStudents(cameraStream);
+      pushTracksToAllStudents(combinedStream);
+
+      // Notify all students that broadcast has started/resumed so joinees auto-receive stream
+      const allStudentIds = new Set([
+        ...Object.keys(studentPeersRef.current),
+        ...participants.filter((p) => p.id !== sessionId).map((p) => p.id),
+        ...Object.keys(lanParticipantsRef.current).filter((id) => id !== sessionId),
+      ]);
+      allStudentIds.forEach((studentId) => {
+        sendSignalToPeer(studentId, {
+          type: "broadcast-started",
+          data: { source: "camera" },
+        });
+      });
     } catch (err: any) {
       setBroadcastError(`Camera permission denied or camera unavailable: ${err.message || "Please allow camera access."}`);
     }
   };
 
-  // Switch camera between front and back while broadcasting
+  // Switch camera between front and back while broadcasting (preserves audio & replaces video track seamlessly)
   const switchCameraFacingMode = async () => {
     if (!isHost || broadcastSource !== "camera") return;
-    const nextMode = cameraFacingMode === "environment" ? "user" : "environment";
-    await startCameraShare(nextMode, isMicActive);
+    setBroadcastError(null);
+
+    const nextMode: "environment" | "user" = cameraFacingMode === "environment" ? "user" : "environment";
+    console.log(`[LocalMeet] Switching camera facingMode from ${cameraFacingMode} to ${nextMode}...`);
+
+    // 1. Find existing video and audio tracks
+    const oldVideoTrack =
+      activeCameraStreamRef.current?.getVideoTracks()[0] ||
+      localStreamRef.current?.getVideoTracks()[0];
+
+    // 2. Cleanly stop old video track so mobile camera HAL releases the hardware sensor
+    if (oldVideoTrack) {
+      oldVideoTrack.onended = null;
+      oldVideoTrack.onmute = null;
+      oldVideoTrack.onunmute = null;
+      try {
+        oldVideoTrack.stop();
+        oldVideoTrack.enabled = false;
+      } catch (e) {}
+    }
+
+    // 3. Small pause (80ms) for mobile OS camera HAL to release previous sensor
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    // 4. Acquire new camera stream with next facing mode
+    let newCameraStream: MediaStream;
+    try {
+      newCameraStream = await getCameraStream(nextMode);
+    } catch (err: any) {
+      console.error("[LocalMeet] Camera switch error:", err);
+      setBroadcastError(`Camera switch failed: ${err.message || "Device unavailable"}`);
+      try {
+        newCameraStream = await getCameraStream(cameraFacingMode);
+      } catch (recoverErr) {
+        return;
+      }
+    }
+
+    const newVideoTrack = newCameraStream.getVideoTracks()[0];
+    if (!newVideoTrack) return;
+
+    newVideoTrack.onended = () => {
+      stopBroadcast();
+    };
+
+    // 5. Preserve existing microphone track so student audio NEVER drops or glitches!
+    const existingAudioTrack =
+      localStreamRef.current?.getAudioTracks()[0] ||
+      micStreamRef.current?.getAudioTracks()[0];
+
+    const tracksToKeep: MediaStreamTrack[] = [newVideoTrack];
+    if (existingAudioTrack && existingAudioTrack.readyState === "live") {
+      tracksToKeep.push(existingAudioTrack);
+    }
+
+    const newCombinedStream = new MediaStream(tracksToKeep);
+    activeCameraStreamRef.current = newCombinedStream;
+    setLocalStream(newCombinedStream);
+    localStreamRef.current = newCombinedStream;
+    setCameraFacingMode(nextMode);
+
+    // 6. Seamlessly replace video track on all connected student peers via WebRTC replaceTrack
+    pushTracksToAllStudents(newCombinedStream);
+
+    console.log(`[LocalMeet] Camera successfully switched to ${nextMode}`);
+  };
+
+  // Cycle through available back camera lenses (e.g. 1x, 2x, 0.5x)
+  const cycleCameraLens = async () => {
+    if (!isHost || broadcastSource !== "camera") return;
+    const backCameras = await getAvailableBackCameras();
+    if (backCameras.length <= 1) return;
+    const currentTrack = activeCameraStreamRef.current?.getVideoTracks()[0];
+    const currentDeviceId = currentTrack?.getSettings()?.deviceId;
+    const currentIndex = backCameras.findIndex((c) => c.deviceId === currentDeviceId);
+    const nextIndex = (currentIndex + 1) % backCameras.length;
+    const nextDevice = backCameras[nextIndex];
+
+    try {
+      if (currentTrack) {
+        currentTrack.onended = null;
+        currentTrack.stop();
+      }
+      await new Promise((r) => setTimeout(r, 80));
+
+      const constraints: MediaStreamConstraints = {
+        video: {
+          deviceId: { ideal: nextDevice.deviceId },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          frameRate: { max: 20, ideal: 15 },
+        },
+        audio: false,
+      };
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      const newVTrack = stream.getVideoTracks()[0];
+      if (!newVTrack) return;
+      newVTrack.onended = () => stopBroadcast();
+
+      const existingAudio = localStreamRef.current?.getAudioTracks()[0] || micStreamRef.current?.getAudioTracks()[0];
+      const newStream = new MediaStream([newVTrack, ...(existingAudio && existingAudio.readyState === "live" ? [existingAudio] : [])]);
+      activeCameraStreamRef.current = newStream;
+      setLocalStream(newStream);
+      localStreamRef.current = newStream;
+      pushTracksToAllStudents(newStream);
+    } catch (e) {}
   };
 
   // HOST: Stop Broadcast (explicitly stops ALL hardware tracks on all streams)
   const stopBroadcast = () => {
+    // Close WebAudio mixer context if active
+    if (audioMixerContextRef.current) {
+      try {
+        audioMixerContextRef.current.close();
+      } catch (e) {}
+      audioMixerContextRef.current = null;
+    }
+
     stopStreamTracks(activeCameraStreamRef.current);
     activeCameraStreamRef.current = null;
     stopStreamTracks(activeScreenStreamRef.current);
@@ -1102,36 +1611,41 @@ export const useLocalMeet = ({
     setIsHostPresenting(false);
 
     // Notify each student that broadcast has stopped so their screen unfreezes and resets immediately
-    Object.keys(studentPeersRef.current).forEach((studentId) => {
-      sendMessage("SIGNAL", {
-        targetId: studentId,
-        signal: {
-          type: "broadcast-stopped",
-        },
+    const allStudentIds = new Set([
+      ...Object.keys(studentPeersRef.current),
+      ...participants.filter((p) => p.id !== sessionId).map((p) => p.id),
+      ...Object.keys(lanParticipantsRef.current).filter((id) => id !== sessionId),
+    ]);
+    allStudentIds.forEach((studentId) => {
+      sendSignalToPeer(studentId, {
+        type: "broadcast-stopped",
       });
     });
 
     pushTracksToAllStudents(null);
   };
 
-  // HOST: Toggle Microphone (mutates .enabled on audio track so VIDEO is NEVER interrupted)
+  // HOST: Toggle Microphone (mutates .enabled on mic track so VIDEO and SCREEN AUDIO are NEVER interrupted)
   const toggleMic = async () => {
     if (!isHost) return;
 
-    // 1. If audio track already exists on local stream, mutate .enabled!
-    if (localStreamRef.current) {
-      const audioTracks = localStreamRef.current.getAudioTracks();
-      if (audioTracks.length > 0) {
-        const nextState = !isMicActive;
-        audioTracks.forEach((t) => {
+    // 1. If micStream already exists, toggle its track .enabled state!
+    if (micStreamRef.current && micStreamRef.current.getAudioTracks().length > 0) {
+      const nextState = !isMicActive;
+      micStreamRef.current.getAudioTracks().forEach((t) => {
+        t.enabled = nextState;
+      });
+      // If no mixer context is running (pure mic audio), also sync localStream's audio tracks
+      if (!audioMixerContextRef.current && localStreamRef.current) {
+        localStreamRef.current.getAudioTracks().forEach((t) => {
           t.enabled = nextState;
         });
-        setIsMicActive(nextState);
-        return;
       }
+      setIsMicActive(nextState);
+      return;
     }
 
-    // 2. If no audio track existed, request mic and add it as a new track WITHOUT touching video
+    // 2. If no micStream existed (e.g. started sharing screen without mic), request microphone access
     try {
       const mic = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -1141,58 +1655,128 @@ export const useLocalMeet = ({
         },
       });
       micStreamRef.current = mic;
-      const audioTrack = mic.getAudioTracks()[0];
-      audioTrack.enabled = true;
+      const micTrack = mic.getAudioTracks()[0];
+      micTrack.enabled = true;
       setIsMicActive(true);
 
-      if (localStreamRef.current) {
-        localStreamRef.current.addTrack(audioTrack);
+      const screenAudioTracks = activeScreenStreamRef.current?.getAudioTracks() || [];
+      const hasScreenAudio = screenAudioTracks.length > 0;
+
+      if (hasScreenAudio) {
+        // Screen audio is already playing -> mix screen audio + newly enabled mic with Web Audio API!
+        try {
+          const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+          const audioCtx = new AudioContextClass();
+          audioMixerContextRef.current = audioCtx;
+          if (audioCtx.state === "suspended") {
+            audioCtx.resume().catch(() => {});
+          }
+
+          const dest = audioCtx.createMediaStreamDestination();
+          const screenSource = audioCtx.createMediaStreamSource(new MediaStream([screenAudioTracks[0]]));
+          screenSource.connect(dest);
+
+          const micSource = audioCtx.createMediaStreamSource(mic);
+          micSource.connect(dest);
+
+          const mixedTrack = dest.stream.getAudioTracks()[0];
+
+          if (localStreamRef.current) {
+            localStreamRef.current.getAudioTracks().forEach((t) => {
+              localStreamRef.current?.removeTrack(t);
+            });
+            localStreamRef.current.addTrack(mixedTrack);
+          }
+          await pushTracksToAllStudents(localStreamRef.current);
+          return;
+        } catch (mixErr) {
+          console.warn("[LocalMeet] Error mixing mic into existing screen audio:", mixErr);
+        }
       }
 
-      // Add audio track to each connected student without removing video sender
-      Object.keys(studentPeersRef.current).forEach(async (studentId) => {
-        const pc = studentPeersRef.current[studentId];
-        if (!pc || pc.signalingState === "closed") return;
-        try {
-          pc.addTrack(audioTrack, localStreamRef.current!);
-          await sendOfferToStudent(studentId, pc);
-        } catch (e) {}
-      });
+      // If no screen audio exists (pure mic), attach micTrack directly
+      if (localStreamRef.current) {
+        localStreamRef.current.addTrack(micTrack);
+      }
+      await pushTracksToAllStudents(localStreamRef.current);
     } catch (err) {
       console.error("[LocalMeet] Failed to access mic:", err);
     }
   };
 
-  // When a student joins the room
-  const handleRoomJoined = useCallback((joiningId: string, _identity: string, _avatar: string, participantsList: any[]) => {
-    if (isHost) {
-      participantsList.forEach((p) => {
-        if (p.id !== sessionId && !studentPeersRef.current[p.id]) {
-          const pc = createHostToStudentConnection(p.id);
-          sendOfferToStudent(p.id, pc);
-        }
-      });
-    } else {
-      if (hostId && !hostPeerRef.current) {
-        createStudentToHostConnection();
-      }
-    }
-  }, [isHost, sessionId, hostId, createHostToStudentConnection, sendOfferToStudent, createStudentToHostConnection]);
+  // When a student joins or rejoins the room
+  const handleRoomJoined = useCallback(
+    (joiningId: string, _identity: string, _avatar: string, participantsList: any[]) => {
+      if (isHost) {
+        participantsList.forEach((p) => {
+          if (p.id !== sessionId) {
+            const pc = studentPeersRef.current[p.id];
+            const isConnected = pc && (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed");
+            const isStale =
+              !pc ||
+              pc.signalingState === "closed" ||
+              pc.iceConnectionState === "failed" ||
+              pc.iceConnectionState === "disconnected";
 
-  // When hostId changes (e.g. Host reclaims room), connect to returning host
+            // If the student is already connected and streaming, NEVER tear down their connection!
+            if (isConnected) {
+              return;
+            }
+
+            // If peer does not exist, or is stale, OR this is the student that just joined/reconnected:
+            if (isStale || p.id === joiningId) {
+              console.log(`[LocalMeet] Establishing connection & sending broadcast offer to student ${p.id}`);
+              const freshPc = createHostToStudentConnection(p.id);
+              sendOfferToStudent(p.id, freshPc, isStale);
+            }
+          }
+        });
+      } else {
+        // STUDENT: Only initiate connection if THIS client itself just joined and is not yet connected
+        const currentPc = hostPeerRef.current;
+        const isConnected = currentPc && (currentPc.iceConnectionState === "connected" || currentPc.iceConnectionState === "completed");
+        if (joiningId === sessionId && hostId && !isConnected) {
+          createStudentToHostConnection();
+          sendSignalToPeer(hostId, {
+            type: "reconnect-request",
+          });
+        }
+      }
+    },
+    [isHost, sessionId, hostId, createHostToStudentConnection, sendOfferToStudent, createStudentToHostConnection, sendSignalToPeer]
+  );
+
+  // When hostId is discovered or changes, connect immediately and request stream
   useEffect(() => {
     if (!isHost && hostId) {
+      const currentPc = hostPeerRef.current;
+      const isConnected =
+        currentPc &&
+        (currentPc.iceConnectionState === "connected" ||
+          currentPc.iceConnectionState === "completed" ||
+          currentPc.connectionState === "connected");
+      if (isConnected) {
+        console.log("[LocalMeet] Already connected to host. Preserving active stream.");
+        return;
+      }
+      console.log("[LocalMeet] Host discovered as", hostId, "- requesting broadcast stream");
       createStudentToHostConnection();
+      sendSignalToPeer(hostId, {
+        type: "reconnect-request",
+      });
     }
-  }, [isHost, hostId, createStudentToHostConnection]);
+  }, [isHost, hostId, createStudentToHostConnection, sendSignalToPeer]);
 
-  // When Host rejoins, initialize connection offers to all waiting students
+  // When Host rejoins or new participants appear without a connection, establish connection
   useEffect(() => {
     if (isHost && participants) {
       participants.forEach((p) => {
-        if (p.id !== sessionId && !studentPeersRef.current[p.id]) {
-          const pc = createHostToStudentConnection(p.id);
-          sendOfferToStudent(p.id, pc);
+        if (p.id !== sessionId) {
+          let pc = studentPeersRef.current[p.id];
+          if (!pc || pc.signalingState === "closed") {
+            pc = createHostToStudentConnection(p.id);
+            sendOfferToStudent(p.id, pc);
+          }
         }
       });
     }
@@ -1247,7 +1831,7 @@ export const useLocalMeet = ({
       setPeerTopologyMap(updatedMap);
       setStarViewersCount(stars);
       setRelayViewersCount(relays);
-    }, 1000);
+    }, 4000);
 
     return () => clearInterval(interval);
   }, [isHost, checkPeerTopology]);
@@ -1264,7 +1848,7 @@ export const useLocalMeet = ({
       } else {
         setConnectionTopology(null);
       }
-    }, 1000);
+    }, 4000);
 
     return () => clearInterval(interval);
   }, [isHost, checkPeerTopology]);
@@ -1280,6 +1864,206 @@ export const useLocalMeet = ({
       }
     };
   }, []);
+
+  // 1. Host generates QR code string for offline attendee pairing (Zero-Daemon)
+  const generateOfflineOfferQr = useCallback(async (targetPeerId = "offline-peer-1"): Promise<string> => {
+    // When offline, use empty iceServers so WebRTC gathers local LAN host candidates immediately without STUN timeout
+    const pc = new RTCPeerConnection({
+      iceServers: [],
+    });
+    offlineOfferPeerRef.current = pc;
+    studentPeersRef.current[targetPeerId] = pc;
+    studentCandidatesQueueRef.current[targetPeerId] = [];
+
+    try {
+      const dc = pc.createDataChannel("localmeet-sync", { ordered: true });
+      setupHostDataChannel(targetPeerId, dc);
+    } catch (e) {}
+
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((track) => {
+        pc.addTrack(track, localStreamRef.current!);
+      });
+    }
+
+    pc.oniceconnectionstatechange = () => {
+      if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
+        setPeerTopologyMap((prev) => ({ ...prev, [targetPeerId]: "star_lan" }));
+        setActiveViewersCount(Object.keys(studentPeersRef.current).length);
+      }
+    };
+
+    const candidateLines: string[] = [];
+    const gatheringDonePromise = new Promise<void>((resolve) => {
+      pc.onicecandidate = (event) => {
+        if (event.candidate && event.candidate.candidate) {
+          candidateLines.push(`a=${event.candidate.candidate}`);
+          if (event.candidate.candidate.includes("typ host")) {
+            setTimeout(() => resolve(), 80);
+          }
+        } else if (!event.candidate) {
+          resolve();
+        }
+      };
+
+      pc.onicegatheringstatechange = () => {
+        if (pc.iceGatheringState === "complete") {
+          resolve();
+        }
+      };
+
+      setTimeout(() => resolve(), 800);
+    });
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    await gatheringDonePromise;
+
+    let finalOfferSdp = pc.localDescription?.sdp || offer.sdp || "";
+    if (candidateLines.length > 0) {
+      for (const line of candidateLines) {
+        if (!finalOfferSdp.includes(line.trim())) {
+          finalOfferSdp += line.trim() + "\r\n";
+        }
+      }
+    }
+    return createOfferQrString(roomCode, sessionId, finalOfferSdp);
+  }, [roomCode, sessionId, setupHostDataChannel]);
+
+  // 2. Student applies Host's Offer QR and generates Answer QR string (Zero-Daemon)
+  const applyOfflineOfferAndGenerateAnswerQr = useCallback(
+    async (rawQrString: string): Promise<string | null> => {
+      try {
+        const parsed = await parsePairingQr(rawQrString);
+        if (!parsed || parsed.type !== "offer") {
+          console.warn("[LocalMeet] Invalid Offer QR code scanned.");
+          return null;
+        }
+
+        if (hostPeerRef.current) {
+          hostPeerRef.current.close();
+        }
+
+        const pc = new RTCPeerConnection({
+          iceServers: [],
+        });
+        hostPeerRef.current = pc;
+
+        pc.ondatachannel = (event) => {
+          setupStudentDataChannel(event.channel);
+        };
+
+        pc.ontrack = (event) => {
+          let stream = (event.streams && event.streams[0]) || null;
+          if (!stream) {
+            stream = new MediaStream([event.track]);
+          }
+          setRemoteStream((prev) => {
+            if (!prev) return stream;
+            const exists = prev.getTracks().some((t) => t.id === event.track.id);
+            if (!exists) prev.addTrack(event.track);
+            return new MediaStream(prev.getTracks());
+          });
+          setIsHostPresenting(true);
+          setStreamHealth("live");
+        };
+
+        pc.oniceconnectionstatechange = () => {
+          if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
+            setStreamHealth("live");
+            setConnectionTopology("star_lan");
+          }
+        };
+
+        const candidateLines: string[] = [];
+        const gatheringDonePromise = new Promise<void>((resolve) => {
+          pc.onicecandidate = (event) => {
+            if (event.candidate && event.candidate.candidate) {
+              candidateLines.push(`a=${event.candidate.candidate}`);
+              if (event.candidate.candidate.includes("typ host")) {
+                setTimeout(() => resolve(), 80);
+              }
+            } else if (!event.candidate) {
+              resolve();
+            }
+          };
+
+          pc.onicegatheringstatechange = () => {
+            if (pc.iceGatheringState === "complete") {
+              resolve();
+            }
+          };
+
+          setTimeout(() => resolve(), 800);
+        });
+
+        await pc.setRemoteDescription(new RTCSessionDescription({ type: "offer", sdp: parsed.sdp }));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        await gatheringDonePromise;
+
+        let finalAnswerSdp = pc.localDescription?.sdp || answer.sdp || "";
+        if (candidateLines.length > 0) {
+          for (const line of candidateLines) {
+            if (!finalAnswerSdp.includes(line.trim())) {
+              finalAnswerSdp += line.trim() + "\r\n";
+            }
+          }
+        }
+        return createAnswerQrString(roomCode, sessionId, finalAnswerSdp);
+      } catch (err: any) {
+        console.error("[LocalMeet] applyOfflineOfferAndGenerateAnswerQr error:", err);
+        return null;
+      }
+    },
+    [roomCode, sessionId, setupStudentDataChannel]
+  );
+
+  // 3. Host applies Student's Answer QR string to complete handshake (Zero-Daemon)
+  const applyOfflineAnswerQr = useCallback(
+    async (rawQrString: string): Promise<boolean> => {
+      try {
+        const parsed = await parsePairingQr(rawQrString);
+        if (!parsed || parsed.type !== "answer") {
+          console.warn("[LocalMeet] Invalid Answer QR code scanned:", parsed?.type);
+          return false;
+        }
+
+        // Find the pending peer connection waiting for an answer
+        const pendingPeer =
+          offlineOfferPeerRef.current ||
+          studentPeersRef.current["offline-peer-1"] ||
+          Object.values(studentPeersRef.current).find((p) => p.signalingState === "have-local-offer") ||
+          Object.values(studentPeersRef.current)[0];
+
+        if (!pendingPeer) {
+          console.warn("[LocalMeet] No pending host peer connection to apply answer to.");
+          return false;
+        }
+
+        if (pendingPeer.signalingState !== "have-local-offer") {
+          console.log("[LocalMeet] Pending peer state:", pendingPeer.signalingState);
+          if (pendingPeer.signalingState === "stable") {
+            return true;
+          }
+        }
+
+        await pendingPeer.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp: parsed.sdp }));
+        const targetSid = parsed.studentId || "offline-peer-1";
+        studentPeersRef.current[targetSid] = pendingPeer;
+        if (studentDataChannelsRef.current["offline-peer-1"]) {
+          studentDataChannelsRef.current[targetSid] = studentDataChannelsRef.current["offline-peer-1"];
+        }
+        setPeerTopologyMap((prev) => ({ ...prev, [targetSid]: "star_lan" }));
+        setActiveViewersCount(Object.keys(studentPeersRef.current).length);
+        return true;
+      } catch (err: any) {
+        console.error("[LocalMeet] applyOfflineAnswerQr failed:", err);
+        return false;
+      }
+    },
+    []
+  );
 
   return {
     isHost,
@@ -1302,6 +2086,7 @@ export const useLocalMeet = ({
     startScreenShare,
     startCameraShare,
     switchCameraFacingMode,
+    cycleCameraLens,
     stopBroadcast,
     toggleMic,
     retryStudentConnection,
@@ -1311,5 +2096,8 @@ export const useLocalMeet = ({
     lanParticipants,
     broadcastDirectMessage,
     internetState,
+    generateOfflineOfferQr,
+    applyOfflineOfferAndGenerateAnswerQr,
+    applyOfflineAnswerQr,
   };
 };

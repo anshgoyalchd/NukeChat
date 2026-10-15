@@ -51,6 +51,63 @@ export function normalizeRoomCode(code: string): string {
   return clean.toUpperCase();
 }
 
+// Fast WAN Connectivity Health Check Probe
+app.get("/api/ping", (c) => {
+  return c.json({ ok: true, timestamp: Date.now() });
+});
+
+// REST: Synchronize & Register Offline Room with Cloudflare DO
+app.post("/api/room/sync", async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  let roomCode = body.roomCode;
+  if (!roomCode) {
+    return c.json({ success: false, error: "Room code is required" }, 400);
+  }
+  roomCode = normalizeRoomCode(roomCode);
+  const hostKey = body.hostKey || crypto.randomUUID();
+  const hostId = body.hostId || null;
+  const type: RoomType = body.type || "meet";
+  const salt =
+    body.salt ||
+    Array.from(crypto.getRandomValues(new Uint8Array(8)))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+  const expiresInMinutes = 120;
+  const expiresAt = body.expiresAt || new Date(Date.now() + expiresInMinutes * 60000).toISOString();
+
+  const id = c.env.ROOM_DO.idFromName(roomCode);
+  const stub = c.env.ROOM_DO.get(id);
+
+  try {
+    const syncRes = await stub.fetch(
+      new Request("http://room/internal-sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          roomCode,
+          type,
+          expiresAt,
+          salt,
+          hostKey,
+          hostId,
+        }),
+      })
+    );
+
+    const syncData: any = await syncRes.json();
+    return c.json({
+      success: true,
+      roomCode,
+      type,
+      expiresAt: syncData.expiresAt || expiresAt,
+      salt: syncData.salt || salt,
+      hostId: syncData.hostId || hostId,
+    });
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message || "Failed to sync room" }, 500);
+  }
+});
+
 // REST: Create Room
 app.post("/api/room/create", async (c) => {
   const body = await c.req.json().catch(() => ({}));

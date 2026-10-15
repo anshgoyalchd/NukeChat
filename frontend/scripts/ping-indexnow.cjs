@@ -18,7 +18,27 @@ const data = JSON.stringify({
     'https://nuke-chat.pages.dev/#/blog/how-to-send-encrypted-messages-browser',
     'https://nuke-chat.pages.dev/#/blog/how-does-webrtc-p2p-file-sharing-work',
     'https://nuke-chat.pages.dev/#/blog/developers-guide-webrtc-datachannels-p2p',
-    'https://nuke-chat.pages.dev/#/blog/how-client-side-aes-gcm-keeps-chats-private'
+    'https://nuke-chat.pages.dev/#/blog/how-client-side-aes-gcm-keeps-chats-private',
+    'https://nuke-chat.pages.dev/#/blog/random-matchmaking-anonymous-chat',
+    'https://nuke-chat.pages.dev/#/blog/ephemeral-chat-room-timer-explained',
+    'https://nuke-chat.pages.dev/#/blog/nuke-vote-feature-explained',
+    'https://nuke-chat.pages.dev/#/blog/anonymous-identity-generation-explained',
+    'https://nuke-chat.pages.dev/#/blog/privacy-by-design-principles-chat',
+    'https://nuke-chat.pages.dev/#/blog/cloudflare-workers-vs-traditional-servers',
+    'https://nuke-chat.pages.dev/#/blog/webrtc-vs-websocket-chat-comparison',
+    'https://nuke-chat.pages.dev/#/blog/end-to-end-encryption-vs-encryption-in-transit',
+    'https://nuke-chat.pages.dev/#/blog/disposable-chat-room-use-cases',
+    'https://nuke-chat.pages.dev/#/blog/how-pbkdf2-key-derivation-works',
+    'https://nuke-chat.pages.dev/#/blog/indexeddb-client-side-cache-privacy',
+    'https://nuke-chat.pages.dev/#/blog/one-room-rule-security-design',
+    'https://nuke-chat.pages.dev/#/blog/framer-motion-animations-chat-ux',
+    'https://nuke-chat.pages.dev/#/blog/what-is-a-durable-object-cloudflare',
+    'https://nuke-chat.pages.dev/#/blog/secure-file-sharing-p2p-vs-upload',
+    'https://nuke-chat.pages.dev/#/blog/gdpr-compliant-chat-no-data',
+    'https://nuke-chat.pages.dev/#/blog/hono-framework-cloudflare-workers',
+    'https://nuke-chat.pages.dev/#/blog/tailwind-css-dark-mode-chat-ui',
+    'https://nuke-chat.pages.dev/#/blog/what-happens-to-your-data-chat-apps',
+    'https://nuke-chat.pages.dev/#/blog/vite-react-typescript-spa-architecture'
   ]
 });
 

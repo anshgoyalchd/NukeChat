@@ -1,0 +1,19 @@
+{
+  "name": "Nuke Chat - Ephemeral & Offline Meetings",
+  "short_name": "NukeChat",
+  "description": "Zero-bandwidth offline local meetings and ephemeral encrypted chat.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0B0B0C",
+  "theme_color": "#0B0B0C",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

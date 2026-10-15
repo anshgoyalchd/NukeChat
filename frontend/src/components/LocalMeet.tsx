@@ -22,10 +22,13 @@ import {
   X,
   PictureInPicture,
   Share2,
+  QrCode,
 } from "lucide-react";
 import { UIMessage } from "./ActiveRoom";
 import { TextMessageBody } from "./TextMessageBody";
 import { BroadcastSource, StreamHealth } from "../hooks/useLocalMeet";
+import { renderQrCode, getOptimalCameraDeviceId, getAvailableBackCameras } from "../utils/offlinePairing";
+import jsQR from "jsqr";
 
 interface LocalMeetProps {
   roomCode: string;
@@ -61,10 +64,15 @@ interface LocalMeetProps {
   startScreenShare: (includeMic?: boolean) => Promise<void>;
   startCameraShare: (facingMode?: "environment" | "user", includeMic?: boolean) => Promise<void>;
   switchCameraFacingMode: () => Promise<void>;
+  cycleCameraLens?: () => Promise<void>;
   stopBroadcast: () => void;
   toggleMic: () => Promise<void>;
   retryStudentConnection: () => void;
   internetState?: "online" | "offline";
+  isLocalDaemon?: boolean;
+  generateOfflineOfferQr?: () => Promise<string>;
+  applyOfflineOfferAndGenerateAnswerQr?: (rawQr: string) => Promise<string | null>;
+  applyOfflineAnswerQr?: (rawQr: string) => Promise<boolean>;
 }
 
 export const LocalMeet: React.FC<LocalMeetProps> = ({
@@ -100,10 +108,15 @@ export const LocalMeet: React.FC<LocalMeetProps> = ({
   startScreenShare,
   startCameraShare,
   switchCameraFacingMode,
+  cycleCameraLens,
   stopBroadcast,
   toggleMic,
   retryStudentConnection,
   internetState = "online",
+  isLocalDaemon = false,
+  generateOfflineOfferQr,
+  applyOfflineOfferAndGenerateAnswerQr,
+  applyOfflineAnswerQr,
 }) => {
   const isMobileDevice =
     typeof navigator !== "undefined" &&
@@ -126,6 +139,239 @@ export const LocalMeet: React.FC<LocalMeetProps> = ({
     typeof navigator !== "undefined" ? navigator.onLine : true
   );
 
+  // Offline LAN QR Pairing States
+  const [showOfflineModal, setShowOfflineModal] = useState(false);
+  const [offlineModalTab, setOfflineModalTab] = useState<"qr" | "scan" | "daemon">(isHost ? "qr" : "scan");
+  const [generatedQrString, setGeneratedQrString] = useState<string | null>(null);
+  const [isGeneratingQr, setIsGeneratingQr] = useState(false);
+  const [scannerActive, setScannerActive] = useState(false);
+  const [scanStatus, setScanStatus] = useState<string | null>(null);
+  const [manualTokenInput, setManualTokenInput] = useState("");
+  const qrCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const scannerVideoRef = useRef<HTMLVideoElement | null>(null);
+  const scannerStreamRef = useRef<MediaStream | null>(null);
+
+  const handleOpenOfflineModal = async () => {
+    setShowOfflineModal(true);
+    if (isHost && generateOfflineOfferQr && !generatedQrString) {
+      setIsGeneratingQr(true);
+      try {
+        const qr = await generateOfflineOfferQr();
+        setGeneratedQrString(qr);
+        if (typeof window !== "undefined") {
+          (window as any)._offlineQrString = qr;
+        }
+      } catch (e) {
+        console.warn("[LocalMeet] Error generating offline QR offer:", e);
+      }
+      setIsGeneratingQr(false);
+    }
+  };
+
+  useEffect(() => {
+    if (showOfflineModal && offlineModalTab === "qr" && qrCanvasRef.current && generatedQrString) {
+      renderQrCode(qrCanvasRef.current, generatedQrString).catch((e) => {
+        console.warn("[LocalMeet] Error rendering QR to canvas:", e);
+      });
+    }
+  }, [showOfflineModal, offlineModalTab, generatedQrString]);
+
+  const [scannerBackCameras, setScannerBackCameras] = useState<Array<{ deviceId: string; label: string }>>([]);
+  const [currentScannerCameraIndex, setCurrentScannerCameraIndex] = useState(0);
+
+  const stopScanner = () => {
+    if (scannerStreamRef.current) {
+      scannerStreamRef.current.getTracks().forEach((t) => t.stop());
+      scannerStreamRef.current = null;
+    }
+    if (scannerVideoRef.current) {
+      scannerVideoRef.current.srcObject = null;
+    }
+    setScannerActive(false);
+  };
+
+  const handleScannedPayload = async (raw: string) => {
+    if (isHost) {
+      if (applyOfflineAnswerQr) {
+        setScanStatus("Applying attendee pairing...");
+        try {
+          const ok = await applyOfflineAnswerQr(raw);
+          if (ok) {
+            setScanStatus("Connected successfully over local Wi-Fi!");
+            setTimeout(() => setShowOfflineModal(false), 1200);
+          } else {
+            if (raw.includes(":O|") || raw.includes('"t":"O"')) {
+              setScanStatus("This is a Host Offer QR. Please scan the attendee's Answer QR.");
+            } else {
+              setScanStatus("Invalid QR code. Please scan the attendee's Answer QR.");
+            }
+          }
+        } catch (err: any) {
+          setScanStatus(`Pairing error: ${err.message || "Failed to apply answer"}`);
+        }
+      }
+    } else {
+      if (applyOfflineOfferAndGenerateAnswerQr) {
+        setScanStatus("Host offer accepted! Generating Answer QR...");
+        try {
+          const answerQr = await applyOfflineOfferAndGenerateAnswerQr(raw);
+          if (answerQr) {
+            setGeneratedQrString(answerQr);
+            if (typeof window !== "undefined") {
+              (window as any)._offlineQrString = answerQr;
+            }
+            setOfflineModalTab("qr");
+            setScanStatus("Now show this Answer QR code to the Host's camera!");
+          } else {
+            if (raw.includes(":A|") || raw.includes('"t":"A"')) {
+              setScanStatus("This is an attendee Answer QR. Please scan the Host's screen QR.");
+            } else {
+              setScanStatus("Invalid Offer QR. Please scan the Host's screen QR code.");
+            }
+          }
+        } catch (err: any) {
+          setScanStatus(`Offer error: ${err.message || "Failed to accept offer"}`);
+        }
+      }
+    }
+  };
+
+  const startScanner = async (preferredDeviceId?: string) => {
+    setScannerActive(true);
+    setScanStatus("Opening camera...");
+    try {
+      if (scannerStreamRef.current) {
+        scannerStreamRef.current.getTracks().forEach((t) => t.stop());
+        scannerStreamRef.current = null;
+      }
+
+      const optimalDeviceId = await getOptimalCameraDeviceId("environment", preferredDeviceId);
+      const videoConstraints: MediaTrackConstraints = optimalDeviceId
+        ? { deviceId: { exact: optimalDeviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+        : { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } };
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: videoConstraints,
+      });
+      scannerStreamRef.current = stream;
+
+      // Lock zoom to 1.0x if available (prevent default 0.5x ultra-wide)
+      const track = stream.getVideoTracks()[0];
+      if (track && (track as any).getCapabilities) {
+        try {
+          const caps = (track as any).getCapabilities();
+          if (caps.zoom && typeof (track as any).applyConstraints === "function") {
+            const minZoom = typeof caps.zoom.min === "number" ? caps.zoom.min : 1.0;
+            await (track as any).applyConstraints({
+              advanced: [{ zoom: Math.max(1.0, minZoom) }],
+            });
+          }
+        } catch (e) {}
+      }
+
+      // Ensure video element receives stream and plays immediately on mount
+      const attachVideo = () => {
+        if (scannerVideoRef.current) {
+          scannerVideoRef.current.srcObject = stream;
+          scannerVideoRef.current.play().catch((e) => {
+            console.warn("[LocalMeet] Scanner play muted/interaction:", e);
+          });
+          setScanStatus("Point camera at the QR code on the other screen...");
+        } else {
+          requestAnimationFrame(attachVideo);
+        }
+      };
+      attachVideo();
+
+      let nativeDetector: any = null;
+      if (typeof window !== "undefined" && "BarcodeDetector" in window) {
+        try {
+          nativeDetector = new (window as any).BarcodeDetector({ formats: ["qr_code"] });
+        } catch (e) {}
+      }
+
+      // Offscreen canvas for software QR decoding via jsQR
+      const offscreenCanvas = document.createElement("canvas");
+      const offscreenCtx = offscreenCanvas.getContext("2d", { willReadFrequently: true });
+
+      const scanInterval = setInterval(async () => {
+        if (!scannerVideoRef.current || !scannerStreamRef.current) {
+          clearInterval(scanInterval);
+          return;
+        }
+
+        const video = scannerVideoRef.current;
+        if (video.readyState < 2) return; // Wait for HAVE_CURRENT_DATA
+
+        // 1. Try Native BarcodeDetector first if available
+        if (nativeDetector) {
+          try {
+            const codes = await nativeDetector.detect(video);
+            if (codes && codes.length > 0) {
+              const raw = codes[0].rawValue;
+              clearInterval(scanInterval);
+              stopScanner();
+              handleScannedPayload(raw);
+              return;
+            }
+          } catch (e) {}
+        }
+
+        // 2. Universal fallback using jsQR (works on 100% of laptops & webcams)
+        try {
+          const vw = video.videoWidth;
+          const vh = video.videoHeight;
+          if (vw > 0 && vh > 0 && offscreenCtx) {
+            // Scale down high-res video (e.g. 1080p -> 480p) to keep jsQR blazing fast (~5ms per frame)
+            const targetWidth = Math.min(vw, 640);
+            const targetHeight = Math.floor((vh / vw) * targetWidth);
+
+            if (offscreenCanvas.width !== targetWidth || offscreenCanvas.height !== targetHeight) {
+              offscreenCanvas.width = targetWidth;
+              offscreenCanvas.height = targetHeight;
+            }
+
+            offscreenCtx.drawImage(video, 0, 0, targetWidth, targetHeight);
+            const imageData = offscreenCtx.getImageData(0, 0, targetWidth, targetHeight);
+            const code = jsQR(imageData.data, targetWidth, targetHeight, {
+              inversionAttempts: "dontInvert",
+            });
+
+            if (code && code.data && code.data.trim()) {
+              clearInterval(scanInterval);
+              stopScanner();
+              handleScannedPayload(code.data.trim());
+            }
+          }
+        } catch (e) {}
+      }, 150);
+    } catch (err: any) {
+      setScanStatus("Camera access unavailable. You can paste the pairing token manually below.");
+    }
+  };
+
+  // Enumerate back cameras when scanner opens and auto-start scanner
+  useEffect(() => {
+    if (showOfflineModal && offlineModalTab === "scan") {
+      getAvailableBackCameras().then((cams) => {
+        setScannerBackCameras(cams);
+      });
+      startScanner();
+    } else {
+      stopScanner();
+    }
+    return () => {
+      stopScanner();
+    };
+  }, [showOfflineModal, offlineModalTab]);
+
+  const cycleScannerCamera = () => {
+    if (scannerBackCameras.length <= 1) return;
+    const nextIdx = (currentScannerCameraIndex + 1) % scannerBackCameras.length;
+    setCurrentScannerCameraIndex(nextIdx);
+    startScanner(scannerBackCameras[nextIdx].deviceId);
+  };
+
   useEffect(() => {
     const handleOnline = () => setIsNetworkOnline(true);
     const handleOffline = () => setIsNetworkOnline(false);
@@ -142,47 +388,77 @@ export const LocalMeet: React.FC<LocalMeetProps> = ({
   const stageContainerRef = useRef<HTMLDivElement | null>(null);
   const chatBottomRef = useRef<HTMLDivElement | null>(null);
 
-  // Bind local stream to preview video and configure autoPictureInPicture
-  useEffect(() => {
-    if (localVideoRef.current) {
-      localVideoRef.current.srcObject = localStream;
-      try {
-        (localVideoRef.current as any).autoPictureInPicture = true;
-      } catch (e) {}
-    }
-    return () => {
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = null;
+  // Robust callback ref to bind local stream to preview video
+  const setLocalVideoRef = useCallback(
+    (node: HTMLVideoElement | null) => {
+      localVideoRef.current = node;
+      if (node && localStream) {
+        if (node.srcObject !== localStream) {
+          node.srcObject = localStream;
+        }
+        try {
+          (node as any).autoPictureInPicture = true;
+        } catch (e) {}
+        node.play().catch(() => {});
       }
-    };
+    },
+    [localStream]
+  );
+
+  // Synchronize local preview video playback
+  useEffect(() => {
+    if (localVideoRef.current && localStream) {
+      if (localVideoRef.current.srcObject !== localStream) {
+        localVideoRef.current.srcObject = localStream;
+      }
+      localVideoRef.current.play().catch(() => {});
+    }
   }, [localStream]);
 
-  // Bind remote stream to student video and configure autoPictureInPicture
-  useEffect(() => {
-    if (remoteVideoRef.current) {
-      remoteVideoRef.current.srcObject = remoteStream;
-      try {
-        (remoteVideoRef.current as any).autoPictureInPicture = true;
-      } catch (e) {}
-      if (remoteStream) {
-        remoteVideoRef.current.play().catch((err) => {
+  // Robust callback ref to instantly bind remoteStream as soon as video element is mounted in DOM
+  const setRemoteVideoRef = useCallback(
+    (node: HTMLVideoElement | null) => {
+      remoteVideoRef.current = node;
+      if (node && remoteStream) {
+        if (node.srcObject !== remoteStream) {
+          node.srcObject = remoteStream;
+        }
+        try {
+          (node as any).autoPictureInPicture = true;
+        } catch (e) {}
+        node.play().catch((err) => {
           console.warn("[LocalMeet] Autoplay unmuted failed, attempting muted autoplay:", err);
-          if (remoteVideoRef.current) {
-            remoteVideoRef.current.muted = true;
-            setIsMuted(true);
-            remoteVideoRef.current.play().catch(() => {});
-          }
+          node.muted = true;
+          setIsMuted(true);
+          node.play().catch(() => {});
+        });
+      }
+    },
+    [remoteStream]
+  );
+
+  // Synchronize remote stream playback with presenter state changes
+  useEffect(() => {
+    const videoEl = remoteVideoRef.current;
+    if (videoEl) {
+      if (remoteStream) {
+        if (videoEl.srcObject !== remoteStream) {
+          videoEl.srcObject = remoteStream;
+        }
+        try {
+          (videoEl as any).autoPictureInPicture = true;
+        } catch (e) {}
+        videoEl.play().catch((err) => {
+          console.warn("[LocalMeet] Autoplay unmuted failed, attempting muted autoplay:", err);
+          videoEl.muted = true;
+          setIsMuted(true);
+          videoEl.play().catch(() => {});
         });
       } else {
-        remoteVideoRef.current.pause();
+        videoEl.pause();
       }
     }
-    return () => {
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = null;
-      }
-    };
-  }, [remoteStream]);
+  }, [remoteStream, isHostPresenting]);
 
   const pipWindowRef = useRef<any>(null);
 
@@ -529,83 +805,75 @@ export const LocalMeet: React.FC<LocalMeetProps> = ({
 
   return (
     <div className="flex flex-col h-[100dvh] bg-black text-white select-none overflow-hidden font-sans">
-      {/* Top Pure Black Navigation Bar */}
-      <header className="h-14 border-b border-neutral-850 bg-black/95 backdrop-blur flex items-center justify-between px-3 sm:px-6 shrink-0 z-20 shadow-md">
-        <div className="flex items-center gap-2 sm:gap-3">
+      {/* Top Navigation Bar: Minimalist & Clean */}
+      <header className="h-14 border-b border-white/[0.08] bg-black/85 backdrop-blur-xl flex items-center justify-between px-2.5 sm:px-5 shrink-0 z-20 sticky top-0">
+        {/* Left Section: Back, Unified Room Chip, Offline QR */}
+        <div className="flex items-center gap-1.5 sm:gap-2.5 min-w-0">
           <button
             onClick={() => setShowConfirmLeave(true)}
-            className="p-2 -ml-2 text-neutral-400 hover:text-white hover:bg-neutral-900 rounded-xl transition-colors active:scale-95"
+            className="w-9 h-9 flex items-center justify-center text-neutral-400 hover:text-white hover:bg-white/10 rounded-xl transition-all active:scale-95 shrink-0"
             title="Leave classroom"
           >
-            <ArrowLeft className="w-5 h-5" />
+            <ArrowLeft className="w-4 h-4" />
           </button>
 
-          <div className="flex items-center gap-1.5 sm:gap-2">
-            <span className="font-extrabold text-sm sm:text-base tracking-tight text-white font-mono">
+          {/* Unified Room Chip: Status dot + Code + Quick Share */}
+          <div className="flex items-center bg-white/[0.06] hover:bg-white/[0.09] border border-white/10 rounded-xl px-2.5 h-9 transition-all">
+            <span
+              className={`w-2 h-2 rounded-full mr-2 shrink-0 ${
+                isDirectLAN
+                  ? "bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.6)]"
+                  : "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.6)]"
+              } animate-pulse`}
+              title={isDirectLAN ? "Direct Star LAN • 0 KB internet data" : "Cloud Relay Connected"}
+            />
+            <span className="font-mono font-bold text-xs sm:text-sm tracking-wider text-white select-all">
               {roomCode}
             </span>
+            <span className="text-[10px] uppercase font-bold text-neutral-400 ml-1.5 hidden md:inline">
+              {isDirectLAN ? "LAN" : "Relay"}
+            </span>
 
-            {/* Direct Join Share Button */}
+            {/* Quick Share / Copy link */}
             <button
               onClick={handleShareInviteLink}
-              className="p-1.5 sm:px-2.5 sm:py-1 text-neutral-300 hover:text-white bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 rounded-xl text-xs font-bold transition-all active:scale-95 shadow-sm"
-              title="Share direct join link"
+              className="ml-2 pl-2 border-l border-white/10 text-neutral-400 hover:text-white transition-colors"
+              title="Copy join link / Share"
             >
               {copiedLink ? (
-                <div className="flex items-center gap-1 text-emerald-400">
-                  <Check className="w-3.5 h-3.5" />
-                  <span className="text-[11px] hidden sm:inline">Copied!</span>
-                </div>
+                <Check className="w-3.5 h-3.5 text-emerald-400" />
               ) : (
-                <div className="flex items-center gap-1">
-                  <Share2 className="w-3.5 h-3.5 text-indigo-400" />
-                  <span className="text-[11px] hidden sm:inline">Share</span>
-                </div>
+                <Share2 className="w-3.5 h-3.5" />
               )}
             </button>
           </div>
 
-          {/* Unified, Single Network Status Badge */}
-          <div
-            className={`flex items-center gap-1.5 px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-full text-xs font-bold tracking-tight border transition-all ${
-              isDirectLAN
-                ? "bg-amber-500/10 border-amber-500/30 text-amber-300"
-                : "bg-emerald-500/10 border-emerald-500/30 text-emerald-300"
-            }`}
-            title={
-              isDirectLAN
-                ? "Direct Local Wi-Fi Mesh • 0 KB internet data"
-                : "Cloud Relay"
-            }
+          {/* Offline QR Pairing Button */}
+          <button
+            onClick={handleOpenOfflineModal}
+            className="h-9 px-2 sm:px-2.5 flex items-center gap-1.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.09] border border-white/10 text-neutral-300 hover:text-white transition-all active:scale-95 shrink-0"
+            title="Offline Wi-Fi QR Pairing"
           >
-            <span
-              className={`w-1.5 h-1.5 rounded-full ${
-                isDirectLAN
-                  ? "bg-amber-400"
-                  : "bg-emerald-400"
-              } animate-pulse`}
-            />
-            <span className="text-[11px] font-semibold">
-              {isDirectLAN ? "LAN" : "Relay"}
-            </span>
-          </div>
+            <QrCode className="w-3.5 h-3.5 text-amber-400" />
+            <span className="text-xs font-semibold hidden md:inline">Offline QR</span>
+          </button>
 
-          {/* Dual Audience Split Counter for Host */}
+          {/* Dual Audience Split Counter for Host (Large screens only) */}
           {isHost && (
-            <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-neutral-900 border border-neutral-850 text-[11px] font-bold">
+            <div className="hidden lg:flex items-center gap-2 px-2.5 h-9 rounded-xl bg-white/[0.04] border border-white/5 text-[11px] font-bold text-neutral-400">
               <span className="text-amber-300 flex items-center gap-1" title="Direct Star LAN peers (0 KB data)">
-                ⭐ {effectiveStarViewers} LAN
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400" /> {effectiveStarViewers} LAN
               </span>
-              <span className="text-neutral-600">|</span>
+              <span className="text-neutral-700">|</span>
               <span className="text-indigo-300 flex items-center gap-1" title="Global Cloud Relay peers">
-                🌐 {relayViewersCount} Cloud
+                <span className="w-1.5 h-1.5 rounded-full bg-indigo-400" /> {relayViewersCount} Cloud
               </span>
             </div>
           )}
         </div>
 
-        {/* Right Controls (Icon-Focused, Clean & Responsive) */}
-        <div className="flex items-center gap-1 sm:gap-2">
+        {/* Right Section: Unified, Clean Action Group */}
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           {/* Audience Counter & Joinees Viewer Button */}
           <button
             type="button"
@@ -617,16 +885,16 @@ export const LocalMeet: React.FC<LocalMeetProps> = ({
                 setIsDrawerOpen(true);
               }
             }}
-            className={`flex items-center gap-1 px-2 py-1 sm:px-2.5 sm:py-1.5 rounded-full font-bold text-xs transition-all active:scale-95 ${
+            className={`h-9 px-2 sm:px-2.5 flex items-center gap-1.5 rounded-xl font-bold text-xs transition-all active:scale-95 ${
               isDrawerOpen && drawerTab === "people"
-                ? "bg-white text-black shadow-md"
-                : "bg-neutral-900 border border-neutral-800 hover:bg-neutral-800 text-neutral-200"
+                ? "bg-white text-black shadow"
+                : "bg-white/[0.06] hover:bg-white/[0.09] border border-white/10 text-neutral-300 hover:text-white"
             }`}
             title={`View participants (${effectiveViewerCount})`}
           >
-            <Users className="w-3.5 h-3.5 text-neutral-400" />
+            <Users className="w-3.5 h-3.5" />
             <span>{effectiveViewerCount}</span>
-            <span className="hidden md:inline font-normal text-neutral-400">
+            <span className="hidden lg:inline font-normal text-neutral-400 text-[11px]">
               {isHost ? (effectiveViewerCount === 1 ? "Viewer" : "Viewers") : "in Class"}
             </span>
           </button>
@@ -636,14 +904,14 @@ export const LocalMeet: React.FC<LocalMeetProps> = ({
             <button
               onClick={handleRaiseHand}
               disabled={handRaised}
-              className={`p-1.5 sm:px-2.5 sm:py-1.5 rounded-full font-bold text-xs transition-all ${
+              className={`h-9 w-9 flex items-center justify-center rounded-xl transition-all active:scale-95 ${
                 handRaised
-                  ? "bg-amber-500/30 text-amber-300 border border-amber-500/50 animate-pulse"
-                  : "bg-neutral-900 border border-neutral-800 hover:bg-neutral-800 text-neutral-200"
+                  ? "bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-[0_0_12px_rgba(245,158,11,0.25)]"
+                  : "bg-white/[0.06] hover:bg-white/[0.09] border border-white/10 text-neutral-300 hover:text-white"
               }`}
               title={handRaised ? "Hand Raised! Teacher notified" : "Raise Hand"}
             >
-              <Hand className={`w-3.5 h-3.5 ${handRaised ? "text-amber-400 animate-bounce" : "text-amber-400"}`} />
+              <Hand className={`w-3.5 h-3.5 ${handRaised ? "text-amber-400 animate-bounce" : "text-neutral-400"}`} />
             </button>
           )}
 
@@ -658,17 +926,17 @@ export const LocalMeet: React.FC<LocalMeetProps> = ({
                 setIsDrawerOpen(true);
               }
             }}
-            className={`flex items-center gap-1 p-1.5 sm:px-2.5 sm:py-1.5 rounded-full font-bold text-xs transition-all active:scale-95 ${
+            className={`h-9 w-9 relative flex items-center justify-center rounded-xl font-bold text-xs transition-all active:scale-95 ${
               isDrawerOpen && drawerTab === "chat"
-                ? "bg-white text-black shadow-md"
-                : "bg-neutral-900 border border-neutral-800 hover:bg-neutral-800 text-neutral-200"
+                ? "bg-white text-black shadow"
+                : "bg-white/[0.06] hover:bg-white/[0.09] border border-white/10 text-neutral-300 hover:text-white"
             }`}
             title="Classroom Q&A"
           >
-            <MessageSquare className="w-3.5 h-3.5 text-neutral-400" />
+            <MessageSquare className="w-3.5 h-3.5" />
             {messages.length > 0 && (
-              <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-extrabold ${isDrawerOpen && drawerTab === "chat" ? "bg-black text-white" : "bg-emerald-500 text-black"}`}>
-                {messages.length}
+              <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-emerald-500 text-black text-[10px] font-black flex items-center justify-center shadow">
+                {messages.length > 99 ? "99+" : messages.length}
               </span>
             )}
           </button>
@@ -676,12 +944,12 @@ export const LocalMeet: React.FC<LocalMeetProps> = ({
           {/* Nuke Classroom Button */}
           <button
             onClick={onNukeClick}
-            className="flex items-center gap-1 p-1.5 sm:px-2.5 sm:py-1.5 bg-rose-950/40 hover:bg-rose-900/60 text-rose-400 border border-rose-800/60 rounded-full font-bold text-xs transition-colors"
+            className="h-9 px-2.5 flex items-center gap-1.5 bg-rose-500/15 hover:bg-rose-500/25 text-rose-400 hover:text-rose-300 border border-rose-500/30 rounded-xl font-bold text-xs transition-all active:scale-95 shrink-0"
             title="Vote to terminate room"
           >
             <Bomb className="w-3.5 h-3.5" />
             {nukeVotesState.votesCount > 0 && (
-              <span className="text-[10px] font-black">
+              <span className="text-[11px] font-extrabold text-rose-300">
                 {nukeVotesState.votesCount}/{nukeVotesState.neededVotes}
               </span>
             )}
@@ -700,10 +968,15 @@ export const LocalMeet: React.FC<LocalMeetProps> = ({
               isScreenSharing ? (
                 <div className="relative w-full h-full flex items-center justify-center">
                   <video
-                    ref={localVideoRef}
+                    ref={setLocalVideoRef}
                     autoPlay
                     muted
                     playsInline
+                    onLoadedMetadata={(e) => {
+                      try {
+                        (e.target as HTMLVideoElement).play().catch(() => {});
+                      } catch (err) {}
+                    }}
                     width={480}
                     height={270}
                     className="w-full h-full object-contain rounded-2xl shadow-2xl border border-neutral-800 bg-black"
@@ -711,8 +984,21 @@ export const LocalMeet: React.FC<LocalMeetProps> = ({
                   />
                   <div className="absolute top-3 left-3 bg-black/75 backdrop-blur border border-white/10 text-white px-2.5 py-1 rounded-full text-xs font-semibold flex items-center gap-1.5 shadow z-10">
                     <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse shrink-0" />
-                    <span>{broadcastSource === "camera" ? "Camera" : "Screen"}</span>
+                    <span>{broadcastSource === "camera" ? `Camera (${cameraFacingMode === "environment" ? "Back" : "Front"})` : "Screen"}</span>
                   </div>
+
+                  {/* Floating Flip Camera button on video preview for instant mobile access */}
+                  {broadcastSource === "camera" && (
+                    <button
+                      type="button"
+                      onClick={switchCameraFacingMode}
+                      className="absolute top-3 right-3 bg-neutral-900/90 hover:bg-neutral-800 text-white px-3 py-1.5 rounded-2xl border border-neutral-700/80 shadow-2xl z-20 flex items-center gap-1.5 backdrop-blur active:scale-90 transition-all font-bold text-xs"
+                      title={cameraFacingMode === "environment" ? "Switch to Front Camera" : "Switch to Back Camera"}
+                    >
+                      <RotateCw className="w-4 h-4 text-emerald-400" />
+                      <span>{cameraFacingMode === "environment" ? "Front" : "Back"}</span>
+                    </button>
+                  )}
 
                   {/* Real-time Hand-Raise Notification Alert on Teacher's Screen */}
                   {recentHandRaise && (
@@ -727,6 +1013,29 @@ export const LocalMeet: React.FC<LocalMeetProps> = ({
                     <div className="absolute top-16 left-1/2 -translate-x-1/2 bg-amber-500 text-black px-4 py-1.5 rounded-2xl text-xs font-black uppercase tracking-wider flex items-center gap-2 shadow-2xl z-30 animate-pulse whitespace-nowrap">
                       <WifiOff className="w-4 h-4" />
                       <span>Internet Disconnected • Local students ({effectiveStarViewers}) streaming offline</span>
+                    </div>
+                  )}
+
+                  {/* Offline Wi-Fi Joinee Prompt Banner for Host */}
+                  {effectiveViewerCount === 0 && (!isConnected || isLocalDaemon || !isNetworkOnline) && (
+                    <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-neutral-900/95 border border-amber-500/50 rounded-2xl px-4 py-2 flex items-center gap-3 backdrop-blur shadow-2xl z-30 animate-fadeIn">
+                      <div className="w-2 h-2 rounded-full bg-amber-400 animate-ping shrink-0" />
+                      <div className="text-xs text-left">
+                        <div className="font-bold text-amber-300">Local Wi-Fi Mode (0 KB Internet)</div>
+                        <div className="text-[10px] text-neutral-300">
+                          {isLocalDaemon
+                            ? `Daemon active! Attendees on this Wi-Fi can enter code [ ${roomCode} ]`
+                            : `Attendees can join by scanning your offline QR code.`}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleOpenOfflineModal}
+                        className="px-3 py-1 bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-[11px] rounded-xl shadow transition-all shrink-0 flex items-center gap-1"
+                      >
+                        <QrCode className="w-3.5 h-3.5" />
+                        <span>Show QR</span>
+                      </button>
                     </div>
                   )}
                 </div>
@@ -763,8 +1072,18 @@ export const LocalMeet: React.FC<LocalMeetProps> = ({
 
                   <div>
                     <h2 className="text-base sm:text-lg font-black tracking-tight">Classroom Broadcast</h2>
-                    <p className="text-[11px] text-neutral-400 mt-0.5">
-                      Local Wi-Fi LAN • 0 KB External Data
+                    <p className="text-[11px] text-neutral-400 mt-0.5 flex items-center justify-center gap-1.5">
+                      {internetState === "online" ? (
+                        <>
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                          <span className="text-emerald-300 font-semibold">Hybrid Room: Online & Local LAN</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                          <span className="text-amber-300 font-semibold">Offline Wi-Fi Classroom • 0 KB Data</span>
+                        </>
+                      )}
                     </p>
                   </div>
 
@@ -847,14 +1166,33 @@ export const LocalMeet: React.FC<LocalMeetProps> = ({
                     )}
                   </div>
 
-                  {/* Offline Hotspot Notice */}
-                  {(!isNetworkOnline || !isConnected) && (
-                    <div className="p-2.5 bg-amber-950/40 border border-amber-800/60 rounded-2xl text-amber-200 text-xs text-left flex items-start gap-2">
-                      <WifiOff className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                      <div className="leading-tight">
-                        <span className="font-bold text-[11px] text-amber-300 block">Offline Hotspot / Router Active</span>
-                        <span className="text-[10px] text-amber-400/80">Stream will reach devices directly over your local Wi-Fi. 0 KB internet required.</span>
+                  {/* Offline Hotspot / Router Notice */}
+                  {(!isNetworkOnline || !isConnected || (typeof localStorage !== "undefined" && localStorage.getItem(`nukechat_offline_meet_${roomCode}`) === "true")) && (
+                    <div className="p-3 bg-amber-950/50 border border-amber-600/60 rounded-2xl text-left space-y-2.5 animate-fadeIn">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2 text-amber-300 font-bold text-xs">
+                          <WifiOff className="w-4 h-4 text-amber-400 shrink-0" />
+                          <span>Offline Wi-Fi Classroom</span>
+                        </div>
+                        <span className="text-[10px] font-mono font-bold bg-amber-400/20 text-amber-300 px-2 py-0.5 rounded-lg">
+                          Code: {roomCode}
+                        </span>
                       </div>
+                      <p className="text-[11px] text-amber-200/90 leading-snug">
+                        {isLocalDaemon
+                          ? `Local Daemon active! Attendees can join with code ${roomCode} on this Wi-Fi.`
+                          : "No internet needed! Attendees on this Wi-Fi can scan your QR code to connect directly."}
+                      </p>
+                      {!isLocalDaemon && (
+                        <button
+                          type="button"
+                          onClick={handleOpenOfflineModal}
+                          className="w-full py-2.5 bg-amber-400 hover:bg-amber-300 text-black font-extrabold text-xs rounded-xl shadow transition-all flex items-center justify-center gap-2 active:scale-[0.98]"
+                        >
+                          <QrCode className="w-4 h-4" />
+                          <span>Show Offline Pairing QR Code</span>
+                        </button>
+                      )}
                     </div>
                   )}
 
@@ -863,6 +1201,17 @@ export const LocalMeet: React.FC<LocalMeetProps> = ({
                     <div className="p-2.5 bg-rose-950/80 border border-rose-800 rounded-2xl text-rose-200 text-xs text-left flex items-start gap-2 animate-fadeIn">
                       <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
                       <p className="leading-snug text-[11px]">{broadcastError}</p>
+                    </div>
+                  )}
+
+                  {/* Video & Tab Audio Tip for Screen Sharing */}
+                  {selectedBroadcastMode === "screen" && (
+                    <div className="p-2.5 bg-neutral-900/80 border border-neutral-800 rounded-2xl text-xs text-left flex items-start gap-2">
+                      <Volume2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                      <p className="text-[11px] text-neutral-300 leading-tight">
+                        <span className="font-bold text-white block mb-0.5">Playing a Video or YouTube?</span>
+                        In the browser popup, check <span className="text-emerald-300 font-semibold">"Share tab audio"</span> or <span className="text-emerald-300 font-semibold">"Also share system audio"</span> for pristine digital sound.
+                      </p>
                     </div>
                   )}
 
@@ -951,7 +1300,7 @@ export const LocalMeet: React.FC<LocalMeetProps> = ({
                 <div className="relative w-full h-full flex items-center justify-center group">
                   {/* Instantly fitted video element (zero slow growth) */}
                   <video
-                    ref={remoteVideoRef}
+                    ref={setRemoteVideoRef}
                     autoPlay
                     playsInline
                     muted={isMuted}
@@ -994,6 +1343,24 @@ export const LocalMeet: React.FC<LocalMeetProps> = ({
                     <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
                     <span className="truncate max-w-[130px] sm:max-w-[180px] font-medium">{hostName}</span>
                   </div>
+
+                  {/* Audio Muted Autoplay Warning / Unmute Pill */}
+                  {remoteStream.getAudioTracks().length > 0 && isMuted && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsMuted(false);
+                        if (remoteVideoRef.current) {
+                          remoteVideoRef.current.muted = false;
+                          remoteVideoRef.current.play().catch(() => {});
+                        }
+                      }}
+                      className="absolute top-12 left-1/2 -translate-x-1/2 bg-indigo-600/90 hover:bg-indigo-500 backdrop-blur text-white px-4 py-2 rounded-full text-xs font-bold flex items-center gap-2 shadow-xl z-20 transition-all active:scale-95 border border-indigo-400/40"
+                    >
+                      <Volume2 className="w-4 h-4 text-emerald-300 animate-pulse" />
+                      <span>Sound is Muted — Tap to Unmute</span>
+                    </button>
+                  )}
 
                   {/* Floating Action Controls on Student Video (Raise Hand, Mute, PiP, Fullscreen) */}
                   <div className="absolute bottom-4 right-4 flex items-center gap-2 opacity-90 group-hover:opacity-100 transition-opacity bg-black/80 backdrop-blur p-1.5 rounded-2xl border border-neutral-800 z-10">
@@ -1059,6 +1426,31 @@ export const LocalMeet: React.FC<LocalMeetProps> = ({
                     </p>
                   </div>
 
+                  {/* Offline Wi-Fi Prompt for Student */}
+                  {(!isNetworkOnline || !isConnected || (typeof localStorage !== "undefined" && localStorage.getItem(`nukechat_offline_meet_${roomCode}`) === "true")) && (
+                    <div className="p-3 bg-amber-950/40 border border-amber-800/60 rounded-2xl text-left space-y-2 animate-fadeIn">
+                      <div className="flex items-center gap-2 text-amber-300 font-bold text-xs">
+                        <WifiOff className="w-4 h-4 text-amber-400 shrink-0" />
+                        <span>Offline Wi-Fi Network</span>
+                      </div>
+                      <p className="text-[11px] text-amber-300/80 leading-snug">
+                        {isLocalDaemon
+                          ? "Connected via Local Daemon! Stream will start as soon as host broadcasts."
+                          : "No internet detected. Scan the Host's on-screen QR code to connect directly over local Wi-Fi:"}
+                      </p>
+                      {!isLocalDaemon && (
+                        <button
+                          type="button"
+                          onClick={handleOpenOfflineModal}
+                          className="w-full py-2 bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-xs rounded-xl shadow transition-all flex items-center justify-center gap-1.5"
+                        >
+                          <QrCode className="w-4 h-4" />
+                          <span>Scan Host Screen QR</span>
+                        </button>
+                      )}
+                    </div>
+                  )}
+
                   <div className="pt-1 flex flex-wrap items-center justify-center gap-2.5">
                     <button
                       onClick={handleRaiseHand}
@@ -1112,11 +1504,13 @@ export const LocalMeet: React.FC<LocalMeetProps> = ({
                 {/* Flip Camera Button (when in Camera mode) */}
                 {broadcastSource === "camera" && (
                   <button
+                    type="button"
                     onClick={switchCameraFacingMode}
-                    className="w-10 h-10 rounded-full bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700 flex items-center justify-center transition-all"
-                    title="Flip camera"
+                    className="h-10 px-3 rounded-full bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700 flex items-center gap-1.5 transition-all active:scale-90 shadow"
+                    title={cameraFacingMode === "environment" ? "Switch to Front Camera" : "Switch to Back Camera"}
                   >
-                    <RotateCw className="w-4 h-4" />
+                    <RotateCw className="w-4 h-4 text-emerald-400" />
+                    <span className="text-xs font-bold">{cameraFacingMode === "environment" ? "Front" : "Back"}</span>
                   </button>
                 )}
 
@@ -1134,7 +1528,7 @@ export const LocalMeet: React.FC<LocalMeetProps> = ({
                 </button>
 
                 {/* Real-time Stream Metrics */}
-                <div className="flex items-center gap-2 px-3 py-1.5 bg-neutral-900 border border-neutral-800 rounded-full text-neutral-300 text-xs font-mono">
+                <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 bg-neutral-900 border border-neutral-800 rounded-full text-neutral-300 text-xs font-mono">
                   <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
                   <span>{broadcastSource === "camera" ? `Cam • ${cameraFacingMode === "environment" ? "Back" : "Front"}` : "Screen • 1080p 15 FPS"}</span>
                 </div>
@@ -1568,6 +1962,191 @@ export const LocalMeet: React.FC<LocalMeetProps> = ({
                 Leave
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Offline LAN Pairing Modal */}
+      {showOfflineModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-[#141414] border border-neutral-800 rounded-3xl p-5 sm:p-6 max-w-sm w-full shadow-2xl space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-amber-400 font-extrabold text-sm">
+                <QrCode className="w-5 h-5" />
+                <span>Offline Wi-Fi Connect</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  stopScanner();
+                  setShowOfflineModal(false);
+                }}
+                className="p-1.5 text-neutral-400 hover:text-white rounded-xl hover:bg-neutral-900 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Tabs */}
+            <div className="flex bg-black p-1 rounded-2xl border border-neutral-800">
+              <button
+                type="button"
+                onClick={() => {
+                  stopScanner();
+                  setOfflineModalTab("qr");
+                }}
+                className={`flex-1 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                  offlineModalTab === "qr" ? "bg-white text-black shadow" : "text-neutral-400 hover:text-white"
+                }`}
+              >
+                {isHost ? "Host QR" : "Answer QR"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setOfflineModalTab("scan");
+                }}
+                className={`flex-1 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                  offlineModalTab === "scan" ? "bg-white text-black shadow" : "text-neutral-400 hover:text-white"
+                }`}
+              >
+                Scan Camera
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  stopScanner();
+                  setOfflineModalTab("daemon");
+                }}
+                className={`flex-1 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                  offlineModalTab === "daemon" ? "bg-white text-black shadow" : "text-neutral-400 hover:text-white"
+                }`}
+              >
+                Code Join
+              </button>
+            </div>
+
+            {/* TAB: QR DISPLAY */}
+            {offlineModalTab === "qr" && (
+              <div className="flex flex-col items-center space-y-3">
+                <div className="p-3 bg-white rounded-2xl shadow-xl flex items-center justify-center min-h-[220px] min-w-[220px]">
+                  {isGeneratingQr ? (
+                    <div className="text-black text-xs font-bold flex items-center gap-2">
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      Generating QR...
+                    </div>
+                  ) : (
+                    <canvas ref={qrCanvasRef} width={260} height={260} className="w-[200px] h-[200px]" />
+                  )}
+                </div>
+                <div className="text-center space-y-1">
+                  <span className="text-[10px] uppercase font-mono tracking-widest text-neutral-400">Room Code</span>
+                  <div className="text-xl font-black font-mono text-emerald-400 tracking-wider">{roomCode}</div>
+                  <p className="text-[11px] text-neutral-400 max-w-xs leading-snug">
+                    {isHost
+                      ? "Have attendees scan this QR code with their camera to stream directly over local Wi-Fi."
+                      : "Show this Answer QR code to the Host's camera to complete pairing."}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* TAB: SCAN CAMERA */}
+            {offlineModalTab === "scan" && (
+              <div className="flex flex-col items-center space-y-3">
+                {/* Lens Switcher if multiple back cameras exist */}
+                {scannerBackCameras.length > 1 && (
+                  <div className="w-full flex justify-end">
+                    <button
+                      type="button"
+                      onClick={cycleScannerCamera}
+                      className="px-2.5 py-1 bg-neutral-800 hover:bg-neutral-700 text-amber-300 border border-neutral-700 rounded-xl text-[10px] font-bold flex items-center gap-1.5 transition-all shadow cursor-pointer"
+                    >
+                      <RotateCw className="w-3 h-3" />
+                      <span>Switch Lens ({currentScannerCameraIndex + 1}/{scannerBackCameras.length})</span>
+                    </button>
+                  </div>
+                )}
+                <div className="relative w-full aspect-square bg-black rounded-2xl overflow-hidden border border-neutral-800 flex items-center justify-center">
+                  <video
+                    ref={scannerVideoRef}
+                    autoPlay
+                    playsInline
+                    muted
+                    onLoadedMetadata={(e) => {
+                      try {
+                        (e.target as HTMLVideoElement).play().catch(() => {});
+                      } catch (err) {}
+                    }}
+                    className="w-full h-full object-cover"
+                  />
+                  <div className="absolute inset-8 border-2 border-amber-400/80 rounded-2xl pointer-events-none animate-pulse" />
+                </div>
+                {scanStatus && (
+                  <p className="text-xs text-amber-300 text-center font-medium leading-snug">{scanStatus}</p>
+                )}
+                {/* Manual Token Fallback */}
+                <div className="w-full pt-1 space-y-1.5">
+                  <div className="text-[10px] font-bold text-neutral-400 uppercase">Or Paste Pairing Token:</div>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={manualTokenInput}
+                      onChange={(e) => setManualTokenInput(e.target.value)}
+                      placeholder="NC:..."
+                      className="flex-1 bg-black border border-neutral-700 rounded-xl px-3 py-1.5 text-xs text-white outline-none focus:border-amber-400 font-mono"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (manualTokenInput.trim()) {
+                          handleScannedPayload(manualTokenInput.trim());
+                        }
+                      }}
+                      className="px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-white font-bold text-xs rounded-xl"
+                    >
+                      Apply
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* TAB: DAEMON / CODE JOIN */}
+            {offlineModalTab === "daemon" && (
+              <div className="space-y-3 text-left">
+                <div className="p-3 bg-neutral-900 border border-neutral-800 rounded-2xl space-y-2">
+                  <span className="text-[11px] font-bold text-amber-300 block">⚡ Join via Room Code (0 KB Internet)</span>
+                  <p className="text-[11px] text-neutral-300 leading-relaxed">
+                    Attendees on the same Wi-Fi router / hotspot can join without scanning QR codes:
+                  </p>
+                  
+                  <div className="bg-black/80 border border-neutral-700/80 rounded-xl p-2.5 space-y-1">
+                    <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider block">Step 1: Open on Attendee Phone/Laptop</span>
+                    <div className="text-xs font-mono font-bold text-sky-400 break-all select-all">
+                      {typeof window !== "undefined" && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1" && window.location.port === "8080"
+                        ? `http://${window.location.hostname}:8080`
+                        : "http://<Host-Laptop-IP>:8080"}
+                    </div>
+                  </div>
+
+                  <div className="bg-black/80 border border-neutral-700/80 rounded-xl p-2.5 space-y-1">
+                    <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider block">Step 2: Enter Room Code</span>
+                    <div className="text-lg font-mono font-black text-emerald-400 tracking-wider select-all">
+                      {roomCode}
+                    </div>
+                  </div>
+
+                  <p className="text-[10px] text-neutral-400 leading-snug">
+                    💡 Host runs <code className="text-amber-300 bg-black px-1.5 py-0.5 rounded font-mono">npm run offline:start</code> in terminal. The terminal displays your exact IP address.
+                  </p>
+                </div>
+
+                <div className="text-[11px] text-neutral-400 text-center font-medium">
+                  {isLocalDaemon ? "✅ Local Daemon Active & Connected!" : "ℹ️ Zero-Server mode: Use Host QR or run daemon for code join"}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

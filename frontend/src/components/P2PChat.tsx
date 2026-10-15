@@ -94,56 +94,65 @@ export const P2PChat: React.FC<P2PChatProps> = ({
 
   return (
     <div className="flex flex-col h-[100dvh] bg-[#F8F7F4] w-full animate-fadeIn font-sans">
-      {/* Header with Glassmorphic design */}
-      <header className="px-4 py-3 bg-surface/85 backdrop-blur-md border-b border-[#E4E2DD] flex items-center justify-between shrink-0 sticky top-0 z-30 shadow-sm shadow-black/2 font-sans select-none">
-        <div className="flex items-center gap-3">
+      {/* Header with Clean Glassmorphism */}
+      <header className="h-14 px-3 sm:px-5 bg-surface/85 backdrop-blur-xl border-b border-[#E4E2DD] flex items-center justify-between shrink-0 sticky top-0 z-30 shadow-sm shadow-black/2 font-sans select-none">
+        <div className="flex items-center gap-2 sm:gap-3">
           <button
             onClick={() => setShowConfirmLeave(true)}
-            className="p-1.5 hover:bg-black/5 rounded-full transition-all active:scale-95 shrink-0"
+            className="w-9 h-9 flex items-center justify-center hover:bg-black/5 text-secondaryText hover:text-primaryText rounded-xl transition-all active:scale-95 shrink-0"
+            title="Leave room"
           >
-            <ArrowLeft className="w-5 h-5 text-secondaryText" />
+            <ArrowLeft className="w-4 h-4" />
           </button>
-          
-          <div>
-            <h1 className="font-extrabold text-base tracking-tight text-primaryText flex items-center gap-1.5 leading-none select-text">
+
+          {/* Unified Room Chip */}
+          <div className="flex items-center bg-black/[0.04] hover:bg-black/[0.07] border border-[#E4E2DD] rounded-xl px-2.5 h-9 transition-all">
+            <span
+              className={`w-2 h-2 rounded-full mr-2 shrink-0 ${
+                openChannels > 0 ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" : "bg-orange-500 shadow-[0_0_8px_rgba(249,115,22,0.5)]"
+              } animate-pulse`}
+              title={openChannels > 0 ? `${openChannels} P2P Direct WebRTC peers` : "Waiting for peers..."}
+            />
+            <span className="font-mono font-bold text-xs sm:text-sm tracking-wider text-primaryText select-all">
               {roomCode}
-              <button
-                type="button"
-                onClick={handleCopyLink}
-                title="Copy classroom join link"
-                className="p-1 hover:bg-black/5 rounded text-secondaryText hover:text-primaryText transition-all duration-200 active:scale-90 select-none"
-              >
-                {copiedLink ? (
-                  <Check className="w-3.5 h-3.5 text-emerald-600" />
-                ) : (
-                  <Link2 className="w-3.5 h-3.5" />
-                )}
-              </button>
-              <span className="flex h-2 w-2 relative select-none">
-                <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${openChannels > 0 ? "bg-emerald-400" : "bg-orange-400"}`} />
-                <span className={`relative inline-flex rounded-full h-2 w-2 ${openChannels > 0 ? "bg-emerald-500" : "bg-orange-500"}`} />
-              </span>
-            </h1>
-            <p className="text-[10px] font-bold text-secondaryText flex items-center gap-1 mt-0.5 uppercase tracking-wide">
-              <span className="px-2 py-0.5 bg-brand-mint text-emerald-800 font-extrabold rounded-full mr-1 shrink-0">P2P MESH</span>
-              {openChannels} peer{openChannels !== 1 && "s"} connected
-            </p>
+            </span>
+            <span className="text-[10px] uppercase font-bold text-secondaryText ml-1.5 hidden md:inline">
+              P2P MESH
+            </span>
+
+            {/* Quick Copy Link */}
+            <button
+              type="button"
+              onClick={handleCopyLink}
+              title="Copy room join link"
+              className="ml-2 pl-2 border-l border-[#E4E2DD] text-secondaryText hover:text-primaryText transition-colors"
+            >
+              {copiedLink ? (
+                <Check className="w-3.5 h-3.5 text-emerald-600" />
+              ) : (
+                <Link2 className="w-3.5 h-3.5" />
+              )}
+            </button>
           </div>
         </div>
 
-        {/* Info Controls */}
-        <div className="flex items-center gap-2 sm:gap-3">
+        {/* Right Info Controls */}
+        <div className="flex items-center gap-1.5 sm:gap-2">
+          {/* Participants */}
           <button
             onClick={() => setIsPanelOpen(true)}
-            className="flex items-center gap-1 px-3 py-1.5 bg-[#EEF2F6] hover:bg-[#E2E8F0] text-primaryText rounded-full font-bold text-xxs tracking-wider uppercase transition-all duration-200 active:scale-95"
+            className="h-9 px-2.5 flex items-center gap-1.5 bg-black/[0.04] hover:bg-black/[0.07] border border-[#E4E2DD] text-primaryText rounded-xl font-bold text-xs transition-all active:scale-95"
+            title="View participants"
           >
             <Users className="w-3.5 h-3.5 text-secondaryText" />
             <span>{participants.length}</span>
           </button>
 
+          {/* Nuke Button */}
           <button
             onClick={onNukeClick}
-            className="flex items-center gap-1.5 px-4 py-1.5 bg-brand-coral hover:bg-brand-coral/95 text-white font-bold text-xxs tracking-wider uppercase rounded-full shadow-md shadow-brand-coral/10 transition-all duration-200 active:scale-95"
+            className="h-9 px-3 flex items-center gap-1.5 bg-brand-coral hover:bg-brand-coral/95 text-white font-bold text-xs uppercase tracking-wider rounded-xl shadow-sm transition-all active:scale-95"
+            title="Nuke room"
           >
             <Bomb className="w-3.5 h-3.5" />
             <span>NUKE IT</span>
